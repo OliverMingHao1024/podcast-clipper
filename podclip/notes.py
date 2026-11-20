@@ -127,3 +127,69 @@ def episode_notes(cues: list[Cue], backend: LLMBackend, language: str = "繁體�
     if merged:
         return merged
     return Notes(parts[0].summary, _dedupe([t for p in parts for t in p.topics]))  # merge failed: plain concat
+
+
+# ------------------------------------------------------------ rough-cut outline ---
+
+OUTLINE_PROMPT = (
+    "為這集 Podcast 做初剪用的段落大綱，讓剪輯師一眼知道每個時間點在講什麼。每行格式為「行號|開始時間|文本」。\n"
+    "按時間順序，每當話題換了就標一個段落：row 是該段第一句的行號，topic（{language}，8–24 字）具體說明這段在講什麼，"
+    "忠於原文，不誇大、不編造、不加評論；寒暄、廣告、錄音雜務也照實標出（例如「開場寒暄」「討論要不要剪掉」）。\n"
+    "每 2–5 分鐘約一個段落，這段共 {lo}–{hi} 個。\n"
+    '輸出格式：{{"sections":[{{"row":0,"topic":"..."}}]}}\n'
+)
+MAX_SECTION = 40
+MIN_GAP_SEC = 60  # entries closer than this are the same section (also removes window-overlap repeats)
+
+
+def parse_outline(raw: str, first: int, last: int) -> list[tuple[int, str]]:
+    data = _extract_json(raw)
+    items = data.get("sections") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("response has no sections list")
+    out: list[tuple[int, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        row, topic = item.get("row"), _clean(item.get("topic"), MAX_SECTION)
+        if isinstance(row, bool) or not isinstance(row, int) or not first <= row <= last or not topic:
+            continue
+        out.append((row, topic))
+    if not out:
+        raise ValueError("no valid sections in response")
+    return sorted(out)
+
+
+def episode_outline(cues: list[Cue], backend: LLMBackend, language: str = "繁體中文") -> list[dict]:
+    """Timecoded one-line descriptions: [{"start": seconds, "topic": str}], in time order."""
+    if not cues:
+        raise ValueError("no cues")
+    picked: list[tuple[int, str]] = []
+    failed = 0
+    spans = windows(cues, Config())
+    for first, last in spans:
+        hours = (cues[last].end - cues[first].start) / 3600
+        prompt = OUTLINE_PROMPT.format(language=language, lo=max(3, round(12 * hours)), hi=max(6, round(30 * hours)))
+        rows = "\n".join(f"{i}|{clock(cues[i].start)}|{cues[i].text}" for i in range(first, last + 1))
+        user = f"{prompt}<transcript>\n{rows}\n</transcript>"
+        result = None
+        for _ in range(2):
+            try:
+                result = parse_outline(backend.complete(SYSTEM, user), first, last)
+                break
+            except LLMError:
+                break
+            except ValueError as error:
+                user += f"\n上一次輸出不合格：{error}。請嚴格依格式重新輸出。"
+        if result is None:
+            failed += 1
+        else:
+            picked.extend(result)
+    if failed == len(spans):
+        raise LLMError("the model returned no usable outline")
+    out: list[dict] = []
+    for row, topic in sorted(picked):
+        start = cues[row].start
+        if not out or start - out[-1]["start"] >= MIN_GAP_SEC:
+            out.append({"start": start, "topic": topic})
+    return out

@@ -3,7 +3,17 @@
 # Everything runs on this computer.
 cd "$(dirname "$0")" || exit 1
 
-if ! command -v python3 >/dev/null 2>&1; then
+# Homebrew (Apple Silicon / Intel) and the usual claude install spots; appended so the user's own PATH wins.
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.claude/local"
+
+# The system python3 on macOS can be 3.9; look for a newer one.
+PY=""
+for c in python3.13 python3.12 python3.11 python3.10 python3; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+    PY="$c"; break
+  fi
+done
+if [ -z "$PY" ]; then
   echo "Python 3.10 or newer is required."
   echo "macOS: install it from https://www.python.org/downloads/ (or: brew install python), then run this again."
   read -r -p "Press Enter to close..." _
@@ -13,7 +23,7 @@ fi
 if [ ! -x ".venv/bin/python" ]; then
   echo "First run: creating a private Python environment and downloading components from PyPI."
   echo "This happens once and can take a few minutes..."
-  python3 -m venv .venv && .venv/bin/python -m pip install -q -e ".[asr]" || {
+  "$PY" -m venv .venv && .venv/bin/python -m pip install -q -e ".[asr]" || {
     echo "Setup failed. See the messages above."
     read -r -p "Press Enter to close..." _
     exit 1

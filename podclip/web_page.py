@@ -42,6 +42,8 @@ th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertic
 td.mute{color:var(--mute)}
 .files a{display:block;padding:6px 0;color:var(--accent);word-break:break-all}
 .actions{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.outline{list-style:none;margin:0 0 16px;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;max-height:260px;overflow:auto;font-size:14px}
+.outline li{display:flex;gap:12px;padding:2px 0}.outline time{font-variant-numeric:tabular-nums;color:var(--accent);min-width:4.5em}
 details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:14px}
 </style>
 </head>
@@ -79,7 +81,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:14px}
     <label class="row"><span>語音辨識品質</span><select id="whisper"><option value="tiny">最快（較不準）</option><option value="base">快</option><option value="small" selected>標準</option><option value="medium">最準（很慢）</option></select></label>
     <label class="row"><span>說話語言</span><select id="lang"><option value="">自動偵測</option><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="ko">한국어</option></select></label>
     <label class="row"><span>說明文字語言</span><select id="tlang"><option>繁體中文</option><option>简体中文</option><option>English</option><option>日本語</option></select></label>
-    <label class="row"><span>使用顯示卡加速</span><select id="device"><option value="cpu" selected>否（較穩）</option><option value="cuda">是（NVIDIA，需另外安裝）</option></select></label>
+    <label class="row" id="gpurow"><span>使用顯示卡加速</span><select id="device"><option value="cpu" selected>否（較穩）</option><option value="cuda">是（NVIDIA，需另外安裝）</option></select></label>
   </details>
   <div class="actions"><button id="go">開始</button></div>
 </section>
@@ -95,6 +97,10 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:14px}
 <section class="card" id="s4" hidden>
   <h2>③ 確認要剪掉的地方</h2>
   <p class="sub" id="planinfo"></p>
+  <div id="outlinebox" hidden>
+    <h2 style="font-size:15px">段落大綱（原音檔時間）</h2>
+    <ul id="outline" class="outline"></ul>
+  </div>
   <table><thead><tr><th>剪掉</th><th>時間</th><th>類型</th><th>說明／逐字稿</th></tr></thead><tbody id="planrows"></tbody></table>
   <label class="row" id="silrow"><input type="checkbox" id="silall" checked> <span style="min-width:0;color:var(--ink)" id="sillabel"></span></label>
   <div class="actions">
@@ -136,6 +142,7 @@ let upload = null, jobId = null, planJob = null, planCuts = [], where = "";
 
 api("/api/env").then(env => {
   where = env.workdir;
+  if (env.platform === "darwin") { $("#gpurow").hidden = true; $("#device").value = "cpu"; }
   const box = $("#envnote");
   const add = (cls, text) => { const n = el("div", text, "note " + cls); box.appendChild(n); };
   if (!env.ffmpeg) add("bad", "找不到 ffmpeg，無法切音檔。請先安裝 ffmpeg（見 README）。");
@@ -216,6 +223,9 @@ async function loadPlan() {
   const p = await api("/api/plan/" + planJob);
   planCuts = p.cuts; show("#s3", false); show("#s4");
   $("#planinfo").textContent = "原長 " + (p.duration / 60).toFixed(1) + " 分。勾選的項目會被剪掉；取消勾選就保留。";
+  const ol = $("#outline"); ol.replaceChildren();
+  (p.outline || []).forEach(o => { const li = el("li"); li.appendChild(el("time", clock(o.start))); li.appendChild(el("span", o.topic)); ol.appendChild(li); });
+  show("#outlinebox", (p.outline || []).length > 0);
   const tb = $("#planrows"); tb.replaceChildren();
   const quiet = planCuts.filter(c => c.kind === "silence" && c.end - c.start < 3);
   planCuts.forEach(c => {

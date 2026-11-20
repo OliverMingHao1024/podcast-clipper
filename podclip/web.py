@@ -172,7 +172,9 @@ def start_job(state: State, kind: str, o: dict) -> Job:
         argv = build_argv(kind, o, audio, folder)
         job = Job(kind, folder)
         env = {**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
-               "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_VERBOSITY": "error", "PYTHONWARNINGS": "ignore"}
+               "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_VERBOSITY": "error", "PYTHONWARNINGS": "ignore",
+               "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).resolve().parent.parent),
+                                                           os.environ.get("PYTHONPATH", "")]))}
         job.proc = subprocess.Popen([sys.executable, "-m", "podclip.cli", *argv], cwd=folder, env=env, text=True,
                                     encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -214,7 +216,7 @@ def read_plan(job: Job) -> dict:
     cuts = [{"i": i, "start": c["start"], "end": c["end"], "kind": c["kind"], "reason": c.get("reason", ""),
              "apply": bool(c.get("apply", True)), "text": edit._excerpt(cues, c["start"], c["end"], 60)}
             for i, c in enumerate(data["cuts"])]
-    return {"duration": data["duration"], "cuts": cuts}
+    return {"duration": data["duration"], "cuts": cuts, "outline": data.get("outline") or []}
 
 
 def save_plan_flags(job: Job, flags: list) -> None:
@@ -229,7 +231,7 @@ def save_plan_flags(job: Job, flags: list) -> None:
 
 def environment() -> dict:
     return {"ffmpeg": bool(shutil.which("ffmpeg")), "claude": bool(shutil.which("claude")),
-            "whisper": find_spec("faster_whisper") is not None}
+            "whisper": find_spec("faster_whisper") is not None, "platform": sys.platform}
 
 
 # ---------------------------------------------------------------------- handler ---

@@ -3,7 +3,7 @@ rem Double-click to open the podclip browser UI. Everything runs on this compute
 setlocal
 cd /d "%~dp0"
 
-where python >nul 2>nul
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
 if errorlevel 1 (
   echo Python 3.10 or newer is required.
   echo Install it from https://www.python.org/downloads/ and tick "Add python.exe to PATH", then run this again.

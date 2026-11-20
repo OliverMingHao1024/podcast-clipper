@@ -9,4 +9,26 @@
 - **集數介紹文案**：根據逐字稿整理簡介與「本集重點」主題清單，可直接貼到節目說明。
 - **給不寫程式的人用**：提供只在本機執行的網頁介面，雙擊啟動檔（Windows 的 `start.bat`、macOS 的 `start.command`）就能操作。
 
+## 如何使用
+
+先把專案抓下來（`git clone`，或在 GitHub 按 Code → Download ZIP 解壓縮）。第一次啟動會自動建立專屬環境並從網路下載所需元件，需要幾分鐘；之後就是直接開啟。啟動後瀏覽器會自動開啟操作頁面，關掉啟動視窗即停止。
+
+### Windows
+
+1. 安裝 [Python 3.10 以上](https://www.python.org/downloads/)（安裝時勾選「Add python.exe to PATH」）。
+2. 安裝 ffmpeg（例如 `winget install ffmpeg`），並確認在命令提示字元輸入 `ffmpeg -version` 有回應。
+3. 雙擊專案資料夾裡的 `start.bat`。
+
+### macOS
+
+1. 安裝 Python 3.10 以上（`brew install python`，或到 python.org 下載）。系統內建的 Python 可能版本過舊。
+2. 安裝 ffmpeg：`brew install ffmpeg`。
+3. 雙擊 `start.command`。第一次若被系統擋下，對它按右鍵選「打開」；若提示沒有執行權限，在終端機執行 `chmod +x start.command` 後再開。
+
+### 共通說明
+
+- 若要使用 AI 功能（挑片段、AI 剪輯建議、介紹文案），電腦上要先安裝並登入 Claude 命令列工具（`claude`）；沒有的話，整集剪輯仍可只做沉默與贅詞（取消勾選「AI 協助」）。
+- 上傳的音檔與產出的成品都放在專案內的 `podclip-work/` 資料夾。
+- 有 NVIDIA 顯示卡的 Windows 電腦可在進階設定開啟顯示卡加速（需另外安裝）；macOS 一律使用 CPU。
+
 AI 部分透過你電腦上已登入的 Claude 命令列工具完成（使用訂閱帳號，不需要 API key）。選段概念參考開源專案 AutoClip，授權聲明見 [NOTICE.md](NOTICE.md)。

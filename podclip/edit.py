@@ -14,6 +14,7 @@ may not exceed MAX_AI_CUT_SEC. Anything else is dropped before it reaches the pl
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from . import srt
+from .notes import episode_outline
 from .finder import SYSTEM, Config, _extract_json, clock, windows
 from .llm import LLMBackend, LLMError
 from .render import RenderError, ffmpeg_path
@@ -32,6 +34,7 @@ SILENCE_KEEP_SEC = 0.4    # ... to this much
 FILLER_TRIM = 0.05        # cuts of filler cues stay this far inside the cue (word edges drift)
 AI_TRIM = 0.1
 MIN_PIECE = 0.05
+log = logging.getLogger(__name__)
 FADE = 0.02
 MAX_AI_CUT_SEC = 300
 AI_KINDS = ("retake", "incident", "tangent", "intro", "other")
@@ -186,10 +189,16 @@ def kept_segments(cuts: list[Cut], duration: float) -> list[tuple[float, float]]
 def build_plan(src: Path, cues: list[srt.Cue], backend: LLMBackend | None, *, language: str = "繁體中文") -> dict[str, Any]:
     duration = probe_duration(src)
     cuts = silence_cuts(src, duration) + filler_cuts(cues)
+    outline: list[dict] = []
     if backend is not None:
         cuts += ai_cuts(cues, backend, language)
+        try:
+            outline = episode_outline(cues, backend, language)
+        except (LLMError, ValueError) as error:  # the outline is a reading aid; the plan is still usable without it
+            log.warning("no outline: %s", error)
     cuts.sort(key=lambda c: c.start)
-    return {"version": 1, "source": str(src.resolve()), "duration": duration, "cuts": [asdict(c) for c in cuts]}
+    return {"version": 1, "source": str(src.resolve()), "duration": duration, "outline": outline,
+            "cuts": [asdict(c) for c in cuts]}
 
 
 def _excerpt(cues: list[srt.Cue], start: float, end: float, limit: int = 40) -> str:
@@ -206,6 +215,8 @@ def plan_markdown(plan: dict[str, Any], cues: list[srt.Cue]) -> str:
     lines = [f"# 剪輯清單：{Path(plan['source']).name}", "",
              f"原長 {plan['duration'] / 60:.1f} 分，預計剪掉約 {total / 60:.1f} 分（重疊處已重複計算，實際以渲染為準）。",
              "把 plan.json 裡不想剪的項目 `\"apply\"` 改成 `false`，再執行 edit-render。", "",
+             *([ "## 段落大綱（原音檔時間）", "", *[f"- {clock(o['start'])} {o['topic']}" for o in plan.get("outline", [])], ""]
+               if plan.get("outline") else []),
              "| 類型 | 總長 |", "|---|---|", *[f"| {k} | {v / 60:.1f} 分 |" for k, v in sorted(removed.items())], "",
              "| # | 時間 | 長度 | 類型 | 說明 | 逐字稿 |", "|---|---|---|---|---|---|"]
     for i, c in enumerate(cuts):

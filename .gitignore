@@ -6,3 +6,4 @@ tests/*.mp3
 tests/*.srt
 .venv/
 podclip-work/
+.DS_Store

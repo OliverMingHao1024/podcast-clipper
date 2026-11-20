@@ -48,3 +48,25 @@ def test_multiple_windows_are_merged_by_a_second_call():
     out = notes.episode_notes(long_cues, fake)
     assert out.topics == ["甲", "乙"] and out.summary == "合併"
     assert "<topics>" in fake.calls[-1] and "逐字稿Z" not in fake.calls[-1]  # the merge call never sees the transcript
+
+
+def test_outline_is_timecoded_ordered_and_deduped():
+    cues = [Cue(i * 30.0, i * 30.0 + 25, f"句子{i}") for i in range(40)]
+    answer = json.dumps({"sections": [{"row": 10, "topic": "聊打工的第一天"}, {"row": 0, "topic": "開場寒暄"},
+                                      {"row": 11, "topic": "太近的重複"}, {"row": 99, "topic": "越界"},
+                                      {"row": 20, "topic": "討論要不要剪掉"}]}, ensure_ascii=False)
+    out = notes.episode_outline(cues, Fake(answer))
+    assert out == [{"start": 0.0, "topic": "開場寒暄"}, {"start": 300.0, "topic": "聊打工的第一天"},
+                   {"start": 600.0, "topic": "討論要不要剪掉"}]  # row 11 is 30 s after row 10: same section
+
+
+def test_outline_failure_does_not_break_the_plan(monkeypatch, tmp_path):
+    from podclip import edit
+    monkeypatch.setattr(edit, "probe_duration", lambda _p: 100.0)
+    monkeypatch.setattr(edit, "silence_cuts", lambda *_a: [])
+    monkeypatch.setattr(edit, "ai_cuts", lambda *_a: [])
+    def boom(*_a):
+        raise edit.LLMError("down")
+    monkeypatch.setattr(edit, "episode_outline", boom)
+    plan = edit.build_plan(tmp_path / "x.mp3", CUES, Fake(), language="繁體中文")
+    assert plan["outline"] == [] and plan["cuts"] == []
