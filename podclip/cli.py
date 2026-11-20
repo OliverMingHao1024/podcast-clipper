@@ -79,6 +79,54 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _supported_audio(path: str) -> Path:
+    src = Path(path).expanduser().resolve()
+    if not src.is_file() or src.suffix.lower() not in AUDIO_EXT:
+        raise SystemExit(f"not a supported audio file: {src}")
+    return src
+
+
+def _edit_plan(args: argparse.Namespace) -> int:
+    from . import edit
+    src = _supported_audio(args.input)
+    out = Path(args.out).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    if args.srt:
+        cues = srt.read(Path(args.srt).expanduser())
+    else:
+        from .transcribe import transcribe
+        print("transcribing locally...", file=sys.stderr)
+        cues = transcribe(src, model=args.whisper_model, language=args.language, device=args.device)
+        srt.write(out / f"{src.stem}.srt", cues)
+    backend = None if args.no_ai else _backend(args)
+    print("looking for silences, fillers" + ("" if args.no_ai else " and AI suggestions") + "...", file=sys.stderr)
+    plan = edit.build_plan(src, cues, backend, language=args.title_language)
+    plan_json, plan_md = edit.write_plan(plan, cues, out)
+    by_kind: dict[str, int] = {}
+    for c in plan["cuts"]:
+        by_kind[c["kind"]] = by_kind.get(c["kind"], 0) + 1
+    print(f"{len(plan['cuts'])} cuts {by_kind}\nreview: {plan_md}\nedit:   {plan_json}  (set \"apply\": false to keep a cut)")
+    return 0
+
+
+def _edit_render(args: argparse.Namespace) -> int:
+    from . import edit
+    src, duration, cuts = edit.read_plan(Path(args.plan))
+    out = Path(args.out).expanduser().resolve()
+    result, new_len = edit.render(src, duration, cuts, out, loudnorm=not args.no_loudnorm)
+    if args.srt:
+        edited = edit.remap_cues(srt.read(Path(args.srt).expanduser()), cuts, duration)
+        srt.write(result.with_suffix(".srt"), edited)
+    print(f"{duration / 60:.1f} min -> {new_len / 60:.1f} min: {result}", file=sys.stderr)
+    return 0
+
+
+def _add_backend_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--backend", choices=("claude", "cmd"), default="claude")
+    p.add_argument("--model", help="model name passed to the claude CLI")
+    p.add_argument("--cmd", help="for --backend cmd: command that reads the prompt on stdin and prints JSON")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="podclip", description=__doc__)
     p.add_argument("--version", action="version", version=__version__)
@@ -87,9 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("input")
     r.add_argument("--srt", help="existing subtitle file; skips transcription")
     r.add_argument("--out", default="out")
-    r.add_argument("--backend", choices=("claude", "cmd"), default="claude")
-    r.add_argument("--model", help="model name passed to the claude CLI")
-    r.add_argument("--cmd", help="for --backend cmd: command that reads the prompt on stdin and prints JSON")
+    _add_backend_args(r)
     r.add_argument("--formats", default="audio,srt,video", help="comma list of audio,srt,video")
     r.add_argument("--audio-ext", default=".mp3", choices=(".mp3", ".m4a", ".wav"))
     r.add_argument("--min-sec", type=float, default=45)
@@ -103,9 +149,37 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--font", default=DEFAULT_FONT)
     r.add_argument("--dry-run", action="store_true", help="only write clips.json, cut nothing")
     r.add_argument("-v", "--verbose", action="store_true")
+    e = sub.add_parser("edit-plan", help="find cuts in a whole uncut episode and write a reviewable plan")
+    e.add_argument("input")
+    e.add_argument("--srt", help="existing subtitle file; skips transcription")
+    e.add_argument("--out", default="edit")
+    _add_backend_args(e)
+    e.add_argument("--no-ai", action="store_true", help="only silences and fillers, no model call")
+    e.add_argument("--title-language", default="繁體中文", help="language of the AI cut reasons")
+    e.add_argument("--language", help="spoken language code for Whisper, e.g. zh")
+    e.add_argument("--whisper-model", default="small")
+    e.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    e.add_argument("-v", "--verbose", action="store_true")
+    d = sub.add_parser("edit-render", help="apply a reviewed plan and write the edited episode")
+    d.add_argument("plan")
+    d.add_argument("--out", default="episode_edited.mp3")
+    d.add_argument("--srt", help="original subtitle file; writes a remapped .srt next to the output")
+    d.add_argument("--no-loudnorm", action="store_true")
+    d.add_argument("-v", "--verbose", action="store_true")
+    w = sub.add_parser("web", help="start the local browser UI (for people who do not use a terminal)")
+    w.add_argument("--workdir", default="podclip-work", help="where uploads and results are kept")
+    w.add_argument("--port", type=int, default=0, help="0 = pick a free port")
+    w.add_argument("--no-browser", action="store_true")
     args = p.parse_args(argv)
+    if args.command == "web":
+        from .web import serve
+        return serve(Path(args.workdir).expanduser(), args.port, not args.no_browser)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING, format="%(levelname)s %(message)s")
     try:
+        if args.command == "edit-plan":
+            return _edit_plan(args)
+        if args.command == "edit-render":
+            return _edit_render(args)
         return _run(args)
     except (LLMError, RenderError, ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)

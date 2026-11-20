@@ -13,9 +13,31 @@ podclip run episode.mp3 --formats audio,srt                # skip the video
 podclip run episode.mp3 --backend cmd --cmd "mytool --stdin"
 ```
 
+## For non-programmers: browser UI (local only)
+
+Clone the repo, then double-click `start.bat` (Windows). The first run creates `.venv` and installs
+the components from PyPI; after that it opens a page in your browser: pick an audio file, choose
+"clips" or "whole-episode edit", review the cuts with checkboxes, download the results. Needs Python 3.10+,
+`ffmpeg` on PATH, and (for AI suggestions) the `claude` CLI logged in. Same thing from a terminal:
+`podclip web [--workdir podclip-work] [--port N] [--no-browser]`. Uploads and results live in `podclip-work/`.
+
+## Edit a whole episode (not clips)
+
+```powershell
+podclip edit-plan episode.mp3 --srt episode.srt --out edit      # writes edit/plan.md (read) and edit/plan.json (edit)
+# in plan.json set "apply": false on any cut you want to keep, then:
+podclip edit-render edit/plan.json --out episode_edited.mp3 --srt episode.srt
+```
+
+Cuts: long pauses shortened to 0.4 s (ffmpeg silencedetect), cues that are only a filler (嗯, 呃, 欸),
+and stretches the model flags as retake / incident / tangent / intro. Joins get 20 ms fades, output is
+loudness-normalised (`--no-loudnorm` to skip) and the `.srt` is remapped to the new timeline.
+`--no-ai` skips the model call. Always read `plan.md`: the AI can over-cut (it once marked the hosts'
+self-introductions as "intro chatter").
+
 ## Design choices (security)
 
-- **No server, no open port, no telemetry, no publishing, no browser cookies, no runtime installs.**
+- **No server by default** (only the optional `podclip web`, below), no telemetry, no publishing, no browser cookies, no runtime installs. `podclip web` listens on 127.0.0.1 only, checks Host/Origin and a per-run token, accepts only whitelisted options (never a path, `--cmd` or a shell string), serves downloads only from one job's `out/` folder, and renders model text with `textContent`. `start.bat` is the only place that installs anything, once, when you run it.
 - **Subscription, not API key**: the `claude` backend runs the official CLI in print mode with all
   tools disabled (`--tools ""`), no MCP, no slash commands, no session saved. This program never
   reads or stores credentials. Check your plan's terms and usage limits before batch use.
