@@ -274,6 +274,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(403, "bad token")
 
     def _body(self, limit: int = 1_000_000) -> dict:
+        self._body_read = True
         length = int(self.headers.get("Content-Length") or 0)
         if length > limit:
             raise ApiError(413, "body too large")
@@ -286,6 +287,23 @@ class Handler(BaseHTTPRequestHandler):
         return data
 
     def _dispatch(self, method: str) -> None:
+        self._body_read = False
+        try:
+            self._route(method)
+        finally:
+            # Keep-alive: a request body nobody read would be parsed as the next request line
+            # (the browser's cancel button posts "{}" and then polls on the same connection).
+            length = int(self.headers.get("Content-Length") or 0) if method in ("POST", "PUT") else 0
+            if length and not self._body_read:
+                if length <= 1_000_000:
+                    try:
+                        self.rfile.read(length)
+                    except OSError:
+                        self.close_connection = True
+                else:
+                    self.close_connection = True
+
+    def _route(self, method: str) -> None:
         try:
             self._check_origin()
             url = urlparse(self.path)
@@ -346,8 +364,10 @@ class Handler(BaseHTTPRequestHandler):
         clean = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", Path(name).name).strip(". ")
         if Path(clean).suffix.lower() not in AUDIO_EXT:
             raise ApiError(400, "unsupported file type")
+        self._body_read = True
         length = int(self.headers.get("Content-Length") or 0)
         if not 0 < length <= MAX_UPLOAD:
+            self.close_connection = True  # the body is left unread
             raise ApiError(413, "file is empty or too large")
         upload_id = uuid.uuid4().hex
         folder = self.state.workdir / "uploads" / upload_id

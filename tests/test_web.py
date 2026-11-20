@@ -123,3 +123,19 @@ def test_job_environment_is_quiet_and_offline(monkeypatch, tmp_path):
     (folder / "ep.mp3").write_bytes(b"x")
     web.start_job(state, "plan", {"upload_id": "a" * 32, "no_ai": True})
     assert seen["env"]["HF_HUB_DISABLE_TELEMETRY"] == "1" and "--no-ai" in seen["argv"]
+
+
+def test_unread_post_body_does_not_poison_the_connection(server, tmp_path):
+    folder = tmp_path / "job"
+    folder.mkdir()
+    job = web.Job("clips", folder)
+    job.status = "done"
+    server.state.jobs[job.id] = job
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1])
+    headers = {"X-Token": server.state.token}
+    conn.request("POST", f"/api/cancel/{job.id}", body=b"{}", headers=headers)  # handler never reads this body
+    assert conn.getresponse().read()
+    conn.request("GET", f"/api/job/{job.id}", headers=headers)  # same keep-alive connection
+    resp = conn.getresponse()
+    assert resp.status == 200 and json.loads(resp.read())["status"] == "done"
+    conn.close()
