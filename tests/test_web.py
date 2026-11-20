@@ -1,7 +1,6 @@
 import http.client
 import json
 import threading
-from pathlib import Path
 
 import pytest
 
@@ -148,3 +147,57 @@ def test_backend_must_be_a_known_name(monkeypatch, tmp_path):
     for bad in ("cmd", "rm -rf", "--cmd", "gemini"):
         with pytest.raises(web.ApiError):
             web.build_argv("plan", {"backend": bad}, tmp_path / "a.mp3", tmp_path)
+
+
+def test_upload_name_cannot_be_a_windows_device(server):
+    info = json.loads(call(server, "PUT", "/api/upload?name=NUL.mp3", raw=b"abc")[1])
+    assert server.state.upload_file(info["upload_id"]).name == "_NUL.mp3"
+
+
+def _done_job(server, tmp_path, kind="clips"):
+    folder = tmp_path / "job"
+    (folder / "out" / "01_a").mkdir(parents=True)
+    (folder / "out" / "01_a" / "clip.mp3").write_bytes(b"audio")
+    (folder / "out" / "01_a" / "post.txt").write_text("標題", encoding="utf-8")
+    (folder / "out" / "clips.json").write_text(json.dumps({"clips": [], "alternates": [{}, {}]}), encoding="utf-8")
+    (folder / "out" / "plan.json").write_text("{}", encoding="utf-8")
+    (folder / "out" / ".hidden").write_text("x")
+    job = web.Job(kind, folder)
+    job.status = "done"
+    server.state.jobs[job.id] = job
+    return job
+
+
+def test_zip_bundles_visible_result_files_only(server, tmp_path):
+    import io
+    import zipfile
+    job = _done_job(server, tmp_path)
+    t = server.state.token
+    assert call(server, "GET", f"/zip/{job.id}", token=False)[0] == 403
+    status, body = call(server, "GET", f"/zip/{job.id}?t={t}", token=False)
+    assert status == 200
+    names = sorted(zipfile.ZipFile(io.BytesIO(body)).namelist())
+    assert names == ["01_a/clip.mp3", "01_a/post.txt", "clips.json"]  # no hidden files, no plan.json
+    assert call(server, "GET", f"/zip/{'0' * 32}?t={t}", token=False)[0] == 404
+
+
+def test_zip_of_an_edited_episode_has_only_the_deliverables(server, tmp_path):
+    import io
+    import zipfile
+    job = _done_job(server, tmp_path, "render")
+    out = job.folder / "out"
+    for name in ("episode_edited.mp3", "episode_edited.srt", "episode_notes.txt", "plan.md", "ep.srt"):
+        (out / name).write_text("x")
+    status, body = call(server, "GET", f"/zip/{job.id}?t={server.state.token}", token=False)
+    assert sorted(zipfile.ZipFile(io.BytesIO(body)).namelist()) == ["episode_edited.mp3", "episode_edited.srt",
+                                                                     "episode_notes.txt", "plan.md"]
+
+
+def test_job_reports_alternates_and_more_needs_a_manifest(server, tmp_path):
+    job = _done_job(server, tmp_path)
+    info = json.loads(call(server, "GET", f"/api/job/{job.id}")[1])
+    assert info["alternates"] == 2
+    argv = web.build_argv("more", {}, None, job.folder)
+    assert argv[0] == "more" and argv[2:] == ["--count", "1"]
+    (job.folder / "out" / "clips.json").unlink()
+    assert call(server, "POST", "/api/start", {"kind": "more", "plan_job": job.id, "options": {}})[0] == 400

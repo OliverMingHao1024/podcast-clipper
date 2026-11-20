@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "podcast-clipper"
 version = "0.1.0"
-description = "Cut audio podcasts into short clips using an LLM reached through a local CLI (subscription) or any command."
+description = "Cut audio podcasts into clips and a tighter episode, with local Whisper and any AI command-line tool you are logged in to (claude, codex, custom)."
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = []

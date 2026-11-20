@@ -157,6 +157,7 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
     <p class="label">完成</p>
     <h2 id="donetitle">完成</h2>
     <div id="donenote"></div>
+    <div class="actions" style="margin:0 0 12px"><button id="zipbtn">下載全部（ZIP）</button><button class="ghost" id="morebtn" hidden>再多挑一段</button></div>
     <div class="files" id="files"></div>
     <p class="sub" id="where" style="margin-top:12px"></p>
     <div class="actions"><button class="ghost" onclick="location.reload()">處理另一個檔案</button></div>
@@ -264,7 +265,7 @@ async function poll(since) {
   if (d.status === "running") { setTimeout(() => poll(d.next), 1000); return; }
   $("#runbar").classList.remove("busy"); show("#s3", d.status !== "done");
   if (d.status === "cancelled") { $("#runtitle").textContent = "已取消"; $("#cancel").disabled = true; show("#s2"); return; }
-  if (d.status === "failed") { $("#runtitle").textContent = "失敗"; $("#cancel").disabled = true; $("#runmsg").textContent = "請展開「詳細紀錄」查看原因（例如 Claude 登入過期）。"; show("#s2"); return; }
+  if (d.status === "failed") { $("#runtitle").textContent = "失敗"; $("#cancel").disabled = true; $("#runmsg").textContent = "請展開「詳細紀錄」查看原因（例如 AI 工具的登入已過期）。"; show("#s2"); return; }
   if (d.kind === "plan") { planJob = jobId; await loadPlan(); } else finish(d);
 }
 
@@ -302,6 +303,12 @@ $("#render").onclick = async () => {
   } catch (e) { alert(e.message); }
 };
 
+$("#zipbtn").onclick = () => { location.href = "/zip/" + jobId + "?t=" + encodeURIComponent(T); };
+$("#morebtn").onclick = async () => {
+  try { await run({kind: "more", plan_job: jobId, options: {}}, "正在切出下一段備選…"); }
+  catch (e) { alert(e.message); }
+};
+
 let notesFrom = null;
 $("#notesbtn").onclick = async () => {
   const btn = $("#notesbtn"), msg = $("#notesmsg"); btn.disabled = true; msg.textContent = "AI 正在讀逐字稿、整理重點…";
@@ -330,6 +337,10 @@ function finish(d) {
     a.download = ""; box.appendChild(a);
   });
   $("#where").textContent = "檔案也存在：" + where;
+  show("#zipbtn", shown.length > 0);
+  const alts = d.alternates, more = $("#morebtn");
+  show("#morebtn", (d.kind === "clips" || d.kind === "more") && alts != null);
+  more.disabled = !alts; more.textContent = alts ? "再多挑一段（還有 " + alts + " 個備選）" : "沒有更多備選";
 }
 </script>
 </body>

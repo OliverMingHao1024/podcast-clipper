@@ -5,13 +5,12 @@ import argparse
 import json
 import logging
 import re
-import shlex
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
 from . import __version__, srt
-from .finder import Config, find_clips
+from .finder import Clip, Config, find_clips_with_alternates
 from .llm import LLMError, make_backend, named_commands
 from .render import DEFAULT_FONT, RenderError, cut_audio, waveform_video, write_srt
 
@@ -53,28 +52,75 @@ def _run(args: argparse.Namespace) -> int:
     cfg = Config(min_sec=args.min_sec, max_sec=args.max_sec, threshold=args.threshold,
                  max_clips=args.max_clips, language=args.title_language)
     print(f"{len(cues)} cues, asking the model for clips...", file=sys.stderr)
-    clips = find_clips(cues, _backend(args), cfg)
+    clips, alternates = find_clips_with_alternates(cues, _backend(args), cfg)
 
     out = Path(args.out).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
-    manifest = []
-    for n, clip in enumerate(clips, 1):
-        folder = out / f"{n:02d}_{_slug(clip.title)}"
-        folder.mkdir(exist_ok=True)
-        entry = {"index": n, "folder": folder.name, **{k: v for k, v in asdict(clip).items() if k != "extra"}}
-        if not args.dry_run:
-            base = folder / "clip"
-            audio = cut_audio(src, clip, base, args.audio_ext) if ("audio" in formats or "video" in formats) else None
-            subs = write_srt(cues, clip, base) if "srt" in formats else None
-            if "video" in formats and audio and subs:
-                waveform_video(audio, subs, clip.duration, base, font=args.font, wave_color=args.wave_color)
-            (folder / "post.txt").write_text(f"{clip.title}\n\n{clip.reason}\n", encoding="utf-8")
-        manifest.append(entry)
-    (out / "clips.json").write_text(json.dumps({"source": src.name, "clips": manifest}, ensure_ascii=False, indent=2),
-                                    encoding="utf-8")
+    options = {"formats": formats, "audio_ext": args.audio_ext, "font": args.font, "wave_color": args.wave_color}
+    manifest = [_render_clip(n, clip, src, cues, out, options, args.dry_run) for n, clip in enumerate(clips, 1)]
+    srt_path = Path(args.srt).expanduser().resolve() if args.srt else out / f"{src.stem}.srt"
+    _write_manifest(out, {"source": src.name, "source_path": str(src), "srt_path": str(srt_path), "options": options,
+                          "clips": manifest, "alternates": [_clip_fields(c) for c in alternates]})
     for e in manifest:
         print(f"{e['index']:02d} [{e['start']:.0f}s-{e['end']:.0f}s] {e['score']:.2f} {e['title']}")
-    print(f"done: {len(manifest)} clips -> {out}", file=sys.stderr)
+    print(f"done: {len(manifest)} clips, {len(alternates)} alternates kept -> {out}", file=sys.stderr)
+    return 0
+
+
+def _clip_fields(clip: Clip) -> dict:
+    return {k: v for k, v in asdict(clip).items() if k != "extra"}
+
+
+def _post_text(clip: Clip) -> str:
+    tags = " ".join(f"#{t}" for t in clip.tags)
+    parts = [clip.title, clip.description or clip.reason]
+    if tags:
+        parts.append(tags)
+    return "\n\n".join(parts) + "\n"
+
+
+def _render_clip(n: int, clip: Clip, src: Path, cues: list[srt.Cue], out: Path, options: dict, dry_run: bool) -> dict:
+    folder = out / f"{n:02d}_{_slug(clip.title)}"
+    folder.mkdir(exist_ok=True)
+    entry = {"index": n, "folder": folder.name, **_clip_fields(clip)}
+    if not dry_run:
+        formats = options["formats"]
+        base = folder / "clip"
+        audio = cut_audio(src, clip, base, options["audio_ext"]) if ("audio" in formats or "video" in formats) else None
+        subs = write_srt(cues, clip, base) if "srt" in formats else None
+        if "video" in formats and audio and subs:
+            waveform_video(audio, subs, clip.duration, base, font=options["font"], wave_color=options["wave_color"])
+        (folder / "post.txt").write_text(_post_text(clip), encoding="utf-8")
+    return entry
+
+
+def _write_manifest(out: Path, manifest: dict) -> None:
+    (out / "clips.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _more(args: argparse.Namespace) -> int:
+    """Render the best remaining alternates from an earlier `run` (no model call, no transcription)."""
+    out = Path(args.out).expanduser().resolve()
+    try:
+        manifest = json.loads((out / "clips.json").read_text(encoding="utf-8"))
+        alternates = list(manifest["alternates"])
+        src, srt_path, options = Path(manifest["source_path"]), Path(manifest["srt_path"]), manifest["options"]
+        cues = srt.read(srt_path)
+        done = list(manifest["clips"])
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        raise SystemExit(f"{out / 'clips.json'} cannot be continued ({error}); run `podclip run` again")
+    if not alternates:
+        raise SystemExit("no alternates left")
+    if not src.is_file():
+        raise SystemExit(f"source file not found: {src}")
+    for _ in range(min(args.count, len(alternates))):
+        clip = Clip(**alternates.pop(0))
+        entry = _render_clip(len(done) + 1, clip, src, cues, out, options, False)
+        done.append(entry)
+        print(f"{entry['index']:02d} [{entry['start']:.0f}s-{entry['end']:.0f}s] {entry['score']:.2f} {entry['title']}")
+    manifest["clips"], manifest["alternates"] = done, alternates
+    _write_manifest(out, manifest)
+    print(f"done: {len(done)} clips, {len(alternates)} alternates left -> {out}", file=sys.stderr)
     return 0
 
 
@@ -180,6 +226,10 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--srt", help="original subtitle file; writes a remapped .srt next to the output")
     d.add_argument("--no-loudnorm", action="store_true")
     d.add_argument("-v", "--verbose", action="store_true")
+    m = sub.add_parser("more", help="cut more clips from the alternates an earlier `run` kept")
+    m.add_argument("out", help="the --out folder of the earlier run (contains clips.json)")
+    m.add_argument("--count", type=int, default=1)
+    m.add_argument("-v", "--verbose", action="store_true")
     n = sub.add_parser("notes", help="write the episode blurb (summary + 本集重點 list) from a subtitle file")
     n.add_argument("srt", help="subtitle file of the (edited) episode")
     n.add_argument("--out", help="also write the text to this file")
@@ -200,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
             return _edit_plan(args)
         if args.command == "notes":
             return _notes(args)
+        if args.command == "more":
+            return _more(args)
         if args.command == "edit-render":
             return _edit_render(args)
         return _run(args)

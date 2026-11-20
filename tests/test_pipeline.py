@@ -1,7 +1,6 @@
 import json
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -114,3 +113,53 @@ def test_cli_end_to_end_with_fake_command(tmp_path):
     for name in ("clip.mp3", "clip.srt", "clip.mp4", "post.txt"):
         assert (folder / name).stat().st_size > 0, name
     assert json.loads((out / "clips.json").read_text(encoding="utf-8"))["clips"][0]["start_row"] == 10
+
+
+def test_description_and_tags_are_cleaned_and_optional():
+    cues = make_cues()
+    raw = json.dumps({"clips": [
+        {"start": 10, "end": 30, "title": "有標籤", "score": 0.9, "description": "一句說明\n第二行",
+         "tags": ["#打工", " 餐飲 業", "打工", "x" * 40, 5, "", "六", "七", "八"]},
+        {"start": 40, "end": 60, "title": "沒標籤", "score": 0.8},
+    ]}, ensure_ascii=False)
+    first, second = parse_clips(raw, cues, 0, len(cues) - 1, Config())
+    assert first.description == "一句說明 第二行"
+    assert first.tags == ["打工", "餐飲業", "x" * 12, "5", "六"]  # '#' stripped, duplicates and empties dropped, capped at 5
+    assert second.description == "" and second.tags == []
+
+
+def test_alternates_are_the_non_overlapping_leftovers():
+    cues = make_cues()
+    backend = Fake(answer((0, 20, "A", 0.9), (5, 25, "重疊", 0.8), (30, 50, "B", 0.6), (60, 79, "C", 0.75), (52, 58, "太短", 0.9)))
+    from podclip.finder import find_clips_with_alternates
+    chosen, alternates = find_clips_with_alternates(cues, backend, Config(max_clips=1))
+    assert [c.title for c in chosen] == ["A"]
+    assert [c.title for c in alternates] == ["C", "B"]  # best first; "重疊" overlaps a pick, "太短" is rejected
+    assert all(a.end <= chosen[0].start or a.start >= chosen[0].end for a in alternates)
+
+
+@needs_ffmpeg
+def test_more_cuts_the_next_alternate_without_a_model_call(tmp_path):
+    audio = tmp_path / "ep.mp3"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=400",
+                    str(audio)], check=True)
+    srt.write(tmp_path / "ep.srt", make_cues())
+    reply = tmp_path / "reply.py"
+    clips = json.dumps({"clips": [
+        {"start": 10, "end": 30, "title": "主要", "reason": "理由理由理由", "description": "貼文說明", "tags": ["甲", "乙"], "score": 0.9},
+        {"start": 40, "end": 60, "title": "備選", "reason": "理由理由理由", "score": 0.6}]}, ensure_ascii=False)
+    reply.write_text(f"import sys; sys.stdin.read(); print({clips!r})", encoding="utf-8")
+    out = tmp_path / "out"
+    assert main(["run", str(audio), "--srt", str(tmp_path / "ep.srt"), "--out", str(out), "--formats", "audio,srt",
+                 "--backend", "cmd", "--cmd", f'python "{reply}"']) == 0
+    manifest = json.loads((out / "clips.json").read_text(encoding="utf-8"))
+    assert [c["title"] for c in manifest["clips"]] == ["主要"] and [a["title"] for a in manifest["alternates"]] == ["備選"]
+    post = (out / manifest["clips"][0]["folder"] / "post.txt").read_text(encoding="utf-8")
+    assert post == "主要\n\n貼文說明\n\n#甲 #乙\n"
+
+    assert main(["more", str(out)]) == 0
+    manifest = json.loads((out / "clips.json").read_text(encoding="utf-8"))
+    assert [c["title"] for c in manifest["clips"]] == ["主要", "備選"] and manifest["alternates"] == []
+    assert (out / manifest["clips"][1]["folder"] / "clip.mp3").stat().st_size > 0
+    with pytest.raises(SystemExit):  # nothing left
+        main(["more", str(out)])

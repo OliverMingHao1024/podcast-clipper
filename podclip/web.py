@@ -19,10 +19,12 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 import webbrowser
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.util import find_spec
 from pathlib import Path
@@ -39,6 +41,7 @@ WHISPER_MODELS = ("tiny", "base", "small", "medium")
 LANGUAGES = ("", "zh", "en", "ja", "ko")
 TITLE_LANGUAGES = ("繁體中文", "简体中文", "English", "日本語")
 OUT_EXT = (".mp3", ".m4a", ".wav")
+_WINDOWS_DEVICES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 
 class ApiError(Exception):
@@ -148,6 +151,8 @@ def build_argv(kind: str, o: dict, audio: Path | None, folder: Path) -> list[str
             raise ApiError(400, "no subtitles to write notes from")
         return ["notes", str(subs), "--out", str(out / "episode_notes.txt"), *_backend_arg(o),
                 "--title-language", _choice(o, "title_language", TITLE_LANGUAGES, "繁體中文")]
+    if kind == "more":
+        return ["more", str(out), "--count", "1"]
     raise ApiError(400, "unknown kind")
 
 
@@ -167,9 +172,10 @@ def start_job(state: State, kind: str, o: dict) -> Job:
         if state.busy():
             raise ApiError(409, "another job is still running")
         audio = None
-        if kind in ("render", "notes"):
+        if kind in ("render", "notes", "more"):
             folder = state.job(str(o.get("plan_job", ""))).folder
-            if not (folder / "out").is_dir() or (kind == "render" and not (folder / "out" / "plan.json").is_file()):
+            needed = {"render": "plan.json", "more": "clips.json"}.get(kind)
+            if not (folder / "out").is_dir() or (needed and not (folder / "out" / needed).is_file()):
                 raise ApiError(400, "that job has no output to work from")
         else:
             audio = state.upload_file(str(o.get("upload_id", "")))
@@ -208,6 +214,26 @@ def job_files(job: Job) -> list[dict]:
         return []
     return [{"path": p.relative_to(out).as_posix(), "size": p.stat().st_size}
             for p in sorted(out.rglob("*")) if p.is_file() and not any(part.startswith(".") for part in p.relative_to(out).parts)]
+
+
+def alternates_left(job: Job) -> int | None:
+    """How many alternate clips an earlier `run` kept, or None when this job has no clips.json."""
+    try:
+        data = json.loads((job.folder / "out" / "clips.json").read_text(encoding="utf-8"))
+        return len(data.get("alternates") or [])
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def bundle_files(job: Job) -> list[Path]:
+    """Files for the "download everything" ZIP: the edited episode and its extras, or every clip file."""
+    out = (job.folder / "out").resolve()
+    files = [p for p in sorted(out.rglob("*"))
+             if p.is_file() and not p.is_symlink() and not any(part.startswith(".") for part in p.relative_to(out).parts)]
+    edited = [p for p in files if p.name.startswith("episode_edited")]
+    if edited:
+        return edited + [p for p in files if p.name in ("episode_notes.txt", "plan.md")]
+    return [p for p in files if p.name != "plan.json"]
 
 
 def read_plan(job: Job) -> dict:
@@ -318,6 +344,9 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and url.path == "/":
                 return self._send(200, PAGE.replace("__TOKEN__", self.state.token).encode("utf-8"),
                                   "text/html; charset=utf-8")
+            if method == "GET" and parts[0] == "zip" and len(parts) == 2:
+                self._check_token((query.get("t") or [None])[0])
+                return self._zip(parts[1])
             if method == "GET" and parts[0] == "files" and len(parts) >= 3:
                 self._check_token((query.get("t") or [None])[0])
                 return self._file(parts[1], "/".join(parts[2:]))
@@ -354,6 +383,7 @@ class Handler(BaseHTTPRequestHandler):
                     start = max(since - job.dropped, 0)
                     lines, total = job.lines[start:], job.dropped + len(job.lines)
                 return self._json({"status": job.status, "kind": job.kind, "lines": lines, "next": total,
+                                   "alternates": alternates_left(job) if job.status != "running" else None,
                                    "elapsed": int(time.time() - job.started),
                                    "files": job_files(job) if job.status != "running" else []})
             if route == ("POST", "cancel"):
@@ -370,6 +400,8 @@ class Handler(BaseHTTPRequestHandler):
         clean = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", Path(name).name).strip(". ")
         if Path(clean).suffix.lower() not in AUDIO_EXT:
             raise ApiError(400, "unsupported file type")
+        if clean.split(".")[0].upper() in _WINDOWS_DEVICES:  # "NUL.mp3" would name a device on Windows
+            clean = "_" + clean
         self._body_read = True
         length = int(self.headers.get("Content-Length") or 0)
         if not 0 < length <= MAX_UPLOAD:
@@ -391,6 +423,28 @@ class Handler(BaseHTTPRequestHandler):
             shutil.rmtree(folder, ignore_errors=True)
             raise
         self._json({"upload_id": upload_id, "name": clean})
+
+    def _zip(self, job_id: str) -> None:
+        job = self.state.job(job_id)
+        files = bundle_files(job)
+        if not files:
+            raise ApiError(404, "nothing to download")
+        root = (job.folder / "out").resolve()
+        with tempfile.TemporaryFile() as tmp:  # anonymous: nothing is left behind on disk
+            with zipfile.ZipFile(tmp, "w", allowZip64=True) as zf:
+                for path in files:
+                    stored = path.suffix.lower() in (".mp3", ".m4a", ".mp4", ".wav", ".ogg", ".flac", ".aac", ".opus")
+                    zf.write(path, path.relative_to(root).as_posix(),
+                             compress_type=zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED)
+            size = tmp.tell()
+            tmp.seek(0)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", "attachment; filename*=UTF-8''podclip-results.zip")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            shutil.copyfileobj(tmp, self.wfile, 1 << 20)
 
     def _file(self, job_id: str, rel: str) -> None:
         job = self.state.job(job_id)

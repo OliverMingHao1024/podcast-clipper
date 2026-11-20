@@ -24,6 +24,11 @@ log = logging.getLogger(__name__)
 DUPLICATE_OVERLAP = 0.5  # picks sharing more than half of the shorter one are the same moment
 MAX_TITLE = 60
 MAX_REASON = 120
+MAX_DESC = 160
+MAX_TAG = 12
+MAX_TAGS = 5
+MAX_ALTERNATES = 10
+ALT_MIN_SCORE = 0.5  # below this a candidate is not worth keeping as an alternate
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,8 @@ class Clip:
     reason: str
     score: float
     extra: dict[str, Any] = field(default_factory=dict)
+    description: str = ""
+    tags: list[str] = field(default_factory=list)
 
     @property
     def duration(self) -> float:
@@ -71,8 +78,9 @@ PROMPT = (
     "回答講完就結束，不要為了湊時長帶進下一題。\n"
     "數量：這段內挑 {count_lo}–{count_hi} 個，寧缺勿濫，片段之間不可重疊。\n"
     "每個片段給：start / end（起訖行號，含 end 行）、title（{language}，{title_max} 字內，忠於原文不誇大不編造）、"
-    "reason（{language}推薦理由，15–30 字）、score（0.0–1.0，0.7 以上才值得發）。\n"
-    '輸出格式：{{"clips":[{{"start":0,"end":0,"title":"...","reason":"...","score":0.0}}]}}\n'
+    "reason（{language}推薦理由，15–30 字）、description（{language}貼文說明，1–2 句、60 字內，只寫片段裡有的內容）、"
+    "tags（3–5 個{language}話題標籤，不含 # 號、每個 12 字內）、score（0.0–1.0，0.7 以上才值得發）。\n"
+    '輸出格式：{{"clips":[{{"start":0,"end":0,"title":"...","reason":"...","description":"...","tags":["..."],"score":0.0}}]}}\n'
 )
 
 
@@ -119,6 +127,15 @@ def _clean(value: Any, limit: int) -> str:
     return re.sub(r"[*_`#\r\n]+", " ", str(value or "")).strip()[:limit]
 
 
+def _tags(value: Any) -> list[str]:
+    out: list[str] = []
+    for item in value if isinstance(value, list) else []:
+        tag = re.sub(r"[\s#＃*_`]+", "", str(item))[:MAX_TAG]
+        if tag and tag not in out:
+            out.append(tag)
+    return out[:MAX_TAGS]
+
+
 def parse_clips(raw: str, cues: list[Cue], first: int, last: int, cfg: Config) -> list[Clip]:
     data = _extract_json(raw)
     items = data.get("clips") if isinstance(data, dict) else data
@@ -143,7 +160,8 @@ def parse_clips(raw: str, cues: list[Cue], first: int, last: int, cfg: Config) -
             score = max(0.0, min(1.0, float(item.get("score"))))
         except (TypeError, ValueError):
             score = 0.5
-        clips.append(Clip(s, e, start, end, title, _clean(item.get("reason"), MAX_REASON), score))
+        clips.append(Clip(s, e, start, end, title, _clean(item.get("reason"), MAX_REASON), score,
+                          description=_clean(item.get("description"), MAX_DESC), tags=_tags(item.get("tags"))))
     if items and not clips:
         raise ValueError("no valid clips in response")
     return clips
@@ -157,7 +175,8 @@ def _fit_duration(clip: Clip, cues: list[Cue], cfg: Config) -> Clip | None:
     end = cues[end_row].end
     if end - clip.start > cfg.max_sec or end - clip.start < cfg.min_sec:
         return None
-    return Clip(clip.start_row, end_row, clip.start, end, clip.title, clip.reason, clip.score)
+    return Clip(clip.start_row, end_row, clip.start, end, clip.title, clip.reason, clip.score,
+                description=clip.description, tags=clip.tags)
 
 
 def dedupe(clips: list[Clip]) -> list[Clip]:
@@ -170,6 +189,12 @@ def dedupe(clips: list[Clip]) -> list[Clip]:
 
 
 def find_clips(cues: list[Cue], backend: LLMBackend, cfg: Config = Config()) -> list[Clip]:
+    return find_clips_with_alternates(cues, backend, cfg)[0]
+
+
+def find_clips_with_alternates(cues: list[Cue], backend: LLMBackend, cfg: Config = Config()) -> tuple[list[Clip], list[Clip]]:
+    """(chosen clips in time order, alternates best first). Alternates never overlap a chosen clip: they are
+    the de-duplicated candidates that missed the threshold or the max_clips cap."""
     if not cues:
         raise ValueError("no cues")
     spans = windows(cues, cfg)
@@ -200,6 +225,10 @@ def find_clips(cues: list[Cue], backend: LLMBackend, cfg: Config = Config()) -> 
     if failed == len(spans):
         raise LLMError("the model returned no usable clips")
     fitted = [c for c in (_fit_duration(c, cues, cfg) for c in picked) if c]
-    chosen = [c for c in dedupe(fitted) if c.score >= cfg.threshold]
-    chosen = sorted(chosen, key=lambda c: c.score, reverse=True)[: cfg.max_clips]
-    return sorted(chosen, key=lambda c: c.start)
+    deduped = dedupe(fitted)
+    ranked = sorted((c for c in deduped if c.score >= cfg.threshold), key=lambda c: c.score, reverse=True)
+    chosen = ranked[: cfg.max_clips]
+    taken = {id(c) for c in chosen}
+    alternates = sorted((c for c in deduped if id(c) not in taken and c.score >= ALT_MIN_SCORE),
+                        key=lambda c: c.score, reverse=True)[:MAX_ALTERNATES]
+    return sorted(chosen, key=lambda c: c.start), alternates
