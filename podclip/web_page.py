@@ -63,6 +63,9 @@ td.mute{color:var(--mute);font-family:var(--mono);font-size:13px}
 .outline{list-style:none;margin:0;padding:var(--s3);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-ctl);max-height:420px;overflow:auto;font-size:14px}
 .outline li{display:flex;gap:var(--s3);padding:var(--s1) 0}.outline time{font:13px var(--mono);color:var(--link);min-width:4.5em}
 .noOutline>#cuts{grid-column:span 12}
+.mini{padding:2px 8px;font-size:13px;font-weight:400;white-space:nowrap}
+.listen{display:flex;gap:var(--s3);align-items:center;flex-wrap:wrap;margin:0 0 var(--s3)}.listen audio{height:36px;max-width:100%}
+.result{padding:var(--s2) 0;border-bottom:1px solid var(--line)}.result audio{display:block;width:100%;margin-top:var(--s1)}
 details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:14px}
 </style>
 </head>
@@ -151,7 +154,8 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
     <p class="label">步驟 3</p>
     <h2>確認要剪掉的地方</h2>
     <p class="sub" id="planinfo" style="margin-bottom:12px"></p>
-    <table><thead><tr><th>剪掉</th><th>時間</th><th>類型</th><th>說明／逐字稿</th></tr></thead><tbody id="planrows"></tbody></table>
+    <div class="listen"><audio id="auditor" controls preload="metadata"></audio><span class="sub" id="earmsg" aria-live="polite">按每一列的「聽內容」或「聽剪後」試聽原音檔。</span></div>
+    <table><thead><tr><th>剪掉</th><th>時間</th><th>類型</th><th>說明／逐字稿</th><th>試聽</th></tr></thead><tbody id="planrows"></tbody></table>
     <label class="row" id="silrow"><input type="checkbox" id="silall" checked> <span style="min-width:0;color:var(--ink)" id="sillabel"></span></label>
     <div class="actions">
       <select id="outfmt" aria-label="輸出格式"><option value=".mp3">mp3</option><option value=".m4a">m4a</option><option value=".wav">wav</option></select>
@@ -299,6 +303,7 @@ async function loadPlan() {
   (p.outline || []).forEach(o => { const li = el("li"); li.appendChild(el("time", clock(o.start))); li.appendChild(el("span", o.topic)); ol.appendChild(li); });
   show("#outlinebox", (p.outline || []).length > 0);
   $("#s4").classList.toggle("noOutline", !(p.outline || []).length);
+  stopListening(); $("#auditor").src = "/source/" + planJob + "?t=" + encodeURIComponent(T);
   const tb = $("#planrows"); tb.replaceChildren();
   const quiet = planCuts.filter(c => c.kind === "silence" && c.end - c.start < 3);
   planCuts.forEach(c => {
@@ -308,6 +313,11 @@ async function loadPlan() {
     tr.appendChild(el("td", clock(c.start) + " (" + (c.end - c.start).toFixed(1) + "s)", "mute"));
     tr.appendChild(el("td", c.kind));
     tr.appendChild(el("td", (c.reason ? c.reason + " ｜ " : "") + c.text));
+    const ears = el("td");
+    [["聽內容", "cut", "播放這一段被剪掉的內容（最多 25 秒）"], ["聽剪後", "after", "播放剪掉之後的銜接：前 4 秒、跳過這一段、後 4 秒"]].forEach(([label, mode, tip]) => {
+      const b = el("button", label, "ghost mini"); b.title = tip; b.onclick = () => listen(c, mode); ears.appendChild(b); ears.appendChild(document.createTextNode(" "));
+    });
+    tr.appendChild(ears);
     tb.appendChild(tr);
   });
   show("#silrow", quiet.length > 0);
@@ -316,8 +326,34 @@ async function loadPlan() {
   $("#silall").onchange = e => quiet.forEach(c => { c.apply = e.target.checked; });
 }
 
+let earTimer = null;
+function stopListening() {
+  clearInterval(earTimer); earTimer = null;
+  const aud = $("#auditor"); if (aud) aud.pause();
+}
+// mode "cut": play what is removed. mode "after": play 4 s before, skip the cut, play 4 s after (what listeners will hear).
+function listen(c, mode) {
+  stopListening();
+  const aud = $("#auditor"), msg = $("#earmsg"), pad = 4;
+  const from = mode === "cut" ? c.start : Math.max(0, c.start - pad);
+  const stop = mode === "cut" ? Math.min(c.end, c.start + 25) : c.end + pad;
+  let jumped = false;
+  const go = () => {
+    aud.currentTime = from;
+    aud.play().then(() => { msg.textContent = mode === "cut" ? "正在播放被剪掉的內容…" : "正在播放剪掉之後的銜接…"; })
+      .catch(e => { msg.textContent = "這個音檔格式瀏覽器無法播放：" + e.message; });
+    earTimer = setInterval(() => {
+      const t = aud.currentTime;
+      if (mode === "after" && !jumped && t >= c.start) { jumped = true; aud.currentTime = c.end; return; }
+      if (t >= stop || aud.ended) { stopListening(); msg.textContent = "播放完畢。"; }
+    }, 60);
+  };
+  if (aud.readyState >= 1) go(); else { aud.addEventListener("loadedmetadata", go, {once: true}); aud.load(); }
+}
+
 $("#render").onclick = async () => {
   try {
+    stopListening();
     await post("/api/plan/" + planJob, {apply: planCuts.map(c => !!c.apply)});
     await run({kind: "render", plan_job: planJob, options: {format: $("#outfmt").value, no_loudnorm: !$("#norm").checked}}, "正在輸出剪好的整集…");
   } catch (e) { alert(e.message); }
@@ -352,9 +388,14 @@ function finish(d) {
   const shown = d.files.filter(f => d.kind === "render" ? /^episode_edited/.test(f.path) : true);
   if (!shown.length) $("#donenote").appendChild(el("div", "沒有產生任何檔案（可能沒有找到合適的片段）。", "note warn"));
   shown.forEach(f => {
+    const url = "/files/" + jobId + "/" + f.path.split("/").map(encodeURIComponent).join("/") + "?t=" + encodeURIComponent(T);
     const a = el("a", f.path + "（" + (f.size / 1048576).toFixed(1) + " MB）");
-    a.href = "/files/" + jobId + "/" + f.path.split("/").map(encodeURIComponent).join("/") + "?t=" + encodeURIComponent(T);
-    a.download = ""; box.appendChild(a);
+    a.href = url; a.download = "";
+    const row = el("div", null, "result"); row.appendChild(a);
+    if (/\.(mp3|m4a|wav)$/i.test(f.path)) {
+      const au = el("audio"); au.controls = true; au.preload = "none"; au.src = url + "&inline=1"; row.appendChild(au);
+    }
+    box.appendChild(row);
   });
   $("#where").textContent = "檔案也存在：" + where;
   show("#zipbtn", shown.length > 0);

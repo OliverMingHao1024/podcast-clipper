@@ -51,8 +51,31 @@ class ApiError(Exception):
         self.status = status
 
 
+AUDIO_TYPES = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav", ".flac": "audio/flac", ".ogg": "audio/ogg",
+               ".opus": "audio/ogg", ".aac": "audio/aac", ".mp4": "audio/mp4", ".webm": "audio/webm"}
+
+
+def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
+    """(start, end) for a single ``bytes=a-b`` / ``bytes=a-`` / ``bytes=-n`` range, None for no or an unusable header
+    (the whole file is then sent), ValueError when the range lies outside the file."""
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", (header or "").strip())
+    if not match or not (match[1] or match[2]) or size == 0:
+        return None
+    if not match[1]:  # last n bytes
+        n = int(match[2])
+        if n == 0:
+            raise ValueError("empty range")
+        return max(size - n, 0), size - 1
+    start = int(match[1])
+    end = min(int(match[2]) if match[2] else size - 1, size - 1)
+    if start >= size or start > end:
+        raise ValueError("unsatisfiable range")
+    return start, end
+
+
 class Job:
     def __init__(self, kind: str, folder: Path):
+        self.source: Path | None = None  # the uploaded audio this job works on (set by start_job)
         self.id = uuid.uuid4().hex
         self.kind = kind
         self.folder = folder
@@ -174,18 +197,21 @@ def start_job(state: State, kind: str, o: dict) -> Job:
         if state.busy():
             raise ApiError(409, "another job is still running")
         audio = None
+        source = None
         if kind in ("render", "notes", "more"):
-            folder = state.job(str(o.get("plan_job", ""))).folder
+            parent = state.job(str(o.get("plan_job", "")))
+            folder, source = parent.folder, parent.source
             needed = {"render": "plan.json", "more": "clips.json"}.get(kind)
             if not (folder / "out").is_dir() or (needed and not (folder / "out" / needed).is_file()):
                 raise ApiError(400, "that job has no output to work from")
         else:
-            audio = state.upload_file(str(o.get("upload_id", "")))
+            audio = source = state.upload_file(str(o.get("upload_id", "")))
             folder = state.workdir / "jobs" / uuid.uuid4().hex
             folder.mkdir(parents=True)
         argv = build_argv(kind, o, audio, folder)
         job = Job(kind, folder)
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
+        job.source = source
+        env ={**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
                "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_VERBOSITY": "error", "PYTHONWARNINGS": "ignore",
                "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).resolve().parent.parent),
                                                            os.environ.get("PYTHONPATH", "")]))}
@@ -349,16 +375,19 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and parts[0] == "zip" and len(parts) == 2:
                 self._check_token((query.get("t") or [None])[0])
                 return self._zip(parts[1])
+            if method == "GET" and parts[0] == "source" and len(parts) == 2:
+                self._check_token((query.get("t") or [None])[0])
+                return self._source(parts[1])
             if method == "GET" and parts[0] == "files" and len(parts) >= 3:
                 self._check_token((query.get("t") or [None])[0])
-                return self._file(parts[1], "/".join(parts[2:]))
+                return self._file(parts[1], "/".join(parts[2:]), inline=(query.get("inline") or [""])[0] == "1")
             if parts[0] != "api":
                 raise ApiError(404, "not found")
             self._check_token(self.headers.get("X-Token"))
             return self._api(method, parts[1:], query)
         except ApiError as error:
             self._json({"error": str(error)}, error.status)
-        except (BrokenPipeError, ConnectionResetError):
+        except ConnectionError:  # the browser closed the connection (seeking an <audio> does this a lot)
             pass
         except Exception as error:  # noqa: BLE001 - never leak a traceback to the browser
             self._json({"error": f"internal error: {type(error).__name__}"}, 500)
@@ -448,21 +477,49 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             shutil.copyfileobj(tmp, self.wfile, 1 << 20)
 
-    def _file(self, job_id: str, rel: str) -> None:
+    def _file(self, job_id: str, rel: str, inline: bool = False) -> None:
         job = self.state.job(job_id)
         root = (job.folder / "out").resolve()
         path = (root / rel).resolve()
         if root not in path.parents or not path.is_file() or any(p.startswith(".") for p in path.relative_to(root).parts):
             raise ApiError(404, "not found")
+        self._serve(path, inline=inline)
+
+    def _source(self, job_id: str) -> None:
+        """The uploaded audio of a job, for listening in the page. The path is chosen by the server, never the browser."""
+        job = self.state.job(job_id)
+        if job.source is None or not job.source.is_file() or job.source.suffix.lower() not in AUDIO_TYPES:
+            raise ApiError(404, "no playable source")
+        self._serve(job.source, inline=True)
+
+    def _serve(self, path: Path, *, inline: bool) -> None:
+        """Send a file, honouring one Range so <audio> can seek. Only known audio types are ever shown inline."""
         size = path.stat().st_size
-        self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(size))
-        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(path.name)}")
+        ctype = AUDIO_TYPES.get(path.suffix.lower()) if inline else None
+        try:
+            span = parse_range(self.headers.get("Range"), size)
+        except ValueError:
+            raise ApiError(416, "range not satisfiable")
+        start, end = span or (0, size - 1)
+        self.send_response(206 if span else 200)
+        self.send_header("Content-Type", ctype or "application/octet-stream")
+        self.send_header("Content-Length", str(end - start + 1 if size else 0))
+        self.send_header("Accept-Ranges", "bytes")
+        if span:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        kind = "inline" if ctype else "attachment"
+        self.send_header("Content-Disposition", f"{kind}; filename*=UTF-8''{quote(path.name)}")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
+        remaining = end - start + 1 if size else 0
         with path.open("rb") as fh:
-            shutil.copyfileobj(fh, self.wfile, 1 << 20)
+            fh.seek(start)
+            while remaining:
+                chunk = fh.read(min(1 << 20, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def do_GET(self) -> None:  # noqa: N802
         self._dispatch("GET")

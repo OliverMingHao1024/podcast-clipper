@@ -210,3 +210,57 @@ def test_clip_options_carry_length_and_shape(tmp_path):
     for bad in ({"aspect": "4:3"}, {"min_sec": 100, "max_sec": 50}, {"max_sec": 5000}):
         with pytest.raises(web.ApiError):
             web.build_argv("clips", {"formats": ["audio"], **bad}, tmp_path / "a.mp3", tmp_path)
+
+
+def test_parse_range_cases():
+    assert web.parse_range(None, 100) is None
+    assert web.parse_range("bytes=0-9", 100) == (0, 9)
+    assert web.parse_range("bytes=90-", 100) == (90, 99)
+    assert web.parse_range("bytes=-10", 100) == (90, 99)
+    assert web.parse_range("bytes=50-500", 100) == (50, 99)  # end is clamped
+    assert web.parse_range("bytes=0-1,5-6", 100) is None      # multi-range: whole file instead
+    assert web.parse_range("nonsense", 100) is None
+    for bad in ("bytes=100-", "bytes=60-50", "bytes=-0"):
+        with pytest.raises(ValueError):
+            web.parse_range(bad, 100)
+
+
+def _raw(server, path, headers=None):
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1])
+    conn.request("GET", path, headers={"Host": f"127.0.0.1:{server.server_address[1]}", **(headers or {})})
+    resp = conn.getresponse()
+    body = resp.read()
+    conn.close()
+    return resp.status, dict(resp.getheaders()), body
+
+
+def test_audio_is_served_inline_with_ranges_and_other_files_stay_downloads(server, tmp_path):
+    job = _done_job(server, tmp_path)
+    data = bytes(range(200))
+    (job.folder / "out" / "01_a" / "clip.mp3").write_bytes(data)
+    t = server.state.token
+    base = f"/files/{job.id}/01_a/clip.mp3?t={t}"
+    status, h, body = _raw(server, base + "&inline=1", {"Range": "bytes=10-19"})
+    assert status == 206 and body == data[10:20] and h["Content-Range"] == "bytes 10-19/200"
+    assert h["Content-Type"] == "audio/mpeg" and h["Content-Disposition"].startswith("inline") and h["Accept-Ranges"] == "bytes"
+    assert _raw(server, base + "&inline=1")[2] == data
+    assert _raw(server, base + "&inline=1", {"Range": "bytes=500-"})[0] == 416
+    status, h, _ = _raw(server, base)  # no inline flag: a download
+    assert h["Content-Type"] == "application/octet-stream" and h["Content-Disposition"].startswith("attachment")
+    status, h, _ = _raw(server, f"/files/{job.id}/01_a/post.txt?t={t}&inline=1")  # not an audio type: never inline
+    assert h["Content-Disposition"].startswith("attachment") and h["Content-Type"] == "application/octet-stream"
+
+
+def test_source_route_serves_only_the_server_chosen_upload(server, tmp_path):
+    job = _done_job(server, tmp_path)
+    t = server.state.token
+    assert _raw(server, f"/source/{job.id}?t={t}")[0] == 404  # no source set
+    audio = tmp_path / "ep.mp3"
+    audio.write_bytes(b"abcdef")
+    job.source = audio
+    assert _raw(server, f"/source/{job.id}?t={t}", {"Range": "bytes=1-3"})[2] == b"bcd"
+    assert _raw(server, f"/source/{job.id}")[0] == 403  # token required
+    note = tmp_path / "secret.txt"
+    note.write_text("no")
+    job.source = note
+    assert _raw(server, f"/source/{job.id}?t={t}")[0] == 404  # only audio types
