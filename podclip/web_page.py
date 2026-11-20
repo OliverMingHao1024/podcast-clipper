@@ -222,7 +222,7 @@ async function loadPlan() {
     tb.appendChild(tr);
   });
   show("#silrow", quiet.length > 0);
-  $("#sillabel").textContent = "同時縮短其餘 " + quiet.length + " 處短暫停頓（約 1 秒以內的換氣空檔）";
+  $("#sillabel").textContent = "同時縮短其餘 " + quiet.length + " 處較短的停頓（3 秒以內，會縮短成約 0.4 秒）";
   $("#silall").checked = quiet.every(c => c.apply);
   $("#silall").onchange = e => quiet.forEach(c => { c.apply = e.target.checked; });
 }

@@ -164,7 +164,8 @@ def start_job(state: State, kind: str, o: dict) -> Job:
             folder.mkdir(parents=True)
         argv = build_argv(kind, o, audio, folder)
         job = Job(kind, folder)
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
+        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
+               "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_VERBOSITY": "error", "PYTHONWARNINGS": "ignore"}
         job.proc = subprocess.Popen([sys.executable, "-m", "podclip.cli", *argv], cwd=folder, env=env, text=True,
                                     encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)

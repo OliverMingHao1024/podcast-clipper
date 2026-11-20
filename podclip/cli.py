@@ -68,7 +68,7 @@ def _run(args: argparse.Namespace) -> int:
             audio = cut_audio(src, clip, base, args.audio_ext) if ("audio" in formats or "video" in formats) else None
             subs = write_srt(cues, clip, base) if "srt" in formats else None
             if "video" in formats and audio and subs:
-                waveform_video(audio, subs, clip.duration, base, font=args.font)
+                waveform_video(audio, subs, clip.duration, base, font=args.font, wave_color=args.wave_color)
             (folder / "post.txt").write_text(f"{clip.title}\n\n{clip.reason}\n", encoding="utf-8")
         manifest.append(entry)
     (out / "clips.json").write_text(json.dumps({"source": src.name, "clips": manifest}, ensure_ascii=False, indent=2),
@@ -147,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--whisper-model", default="small")
     r.add_argument("--device", choices=("cpu", "cuda"), default="cpu", help="Whisper device; cuda needs the gpu extra")
     r.add_argument("--font", default=DEFAULT_FONT)
+    r.add_argument("--wave-color", default="0x6AA9FF", help="waveform colour as 0xRRGGBB")
     r.add_argument("--dry-run", action="store_true", help="only write clips.json, cut nothing")
     r.add_argument("-v", "--verbose", action="store_true")
     e = sub.add_parser("edit-plan", help="find cuts in a whole uncut episode and write a reviewable plan")

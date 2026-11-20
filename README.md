@@ -10,6 +10,7 @@ podclip run episode.mp3 --srt episode.srt --out out        # uses the logged-in 
 podclip run episode.mp3 --device cuda                      # no --srt: transcribe on the GPU first
 podclip run episode.mp3 --dry-run                          # only clips.json, cut nothing
 podclip run episode.mp3 --formats audio,srt                # skip the video
+podclip run episode.mp3 --wave-color 0xFF8844              # waveform colour
 podclip run episode.mp3 --backend cmd --cmd "mytool --stdin"
 ```
 

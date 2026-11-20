@@ -3,6 +3,7 @@ the model is cached; nothing is uploaded."""
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from .srt import Cue
@@ -31,8 +32,15 @@ def transcribe(audio: Path, *, model: str = "small", language: str | None = None
     except ImportError as error:
         raise RuntimeError("faster-whisper is not installed; run: pip install -e .[asr], or pass --srt") from error
     engine = WhisperModel(model, device=device, compute_type="int8" if device == "cpu" else "float16")
-    segments, _info = engine.transcribe(str(audio), language=language, vad_filter=True)
-    cues = [Cue(s.start, s.end, s.text.strip()) for s in segments if s.text.strip() and s.end > s.start]
+    segments, info = engine.transcribe(str(audio), language=language, vad_filter=True)
+    cues, last_pct = [], -1
+    for s in segments:  # lazy generator: this loop is the actual work, so report progress here
+        if s.text.strip() and s.end > s.start:
+            cues.append(Cue(s.start, s.end, s.text.strip()))
+        pct = int(100 * s.end / info.duration) // 10 * 10 if info.duration else 0
+        if pct > last_pct:
+            last_pct = pct
+            print(f"transcribing... {min(pct, 100)}%", file=sys.stderr, flush=True)
     if not cues:
         raise RuntimeError("transcription produced no text")
     return cues

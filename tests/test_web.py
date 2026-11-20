@@ -101,3 +101,25 @@ def test_plan_flags_roundtrip(server, tmp_path):
     assert call(server, "POST", f"/api/plan/{job.id}", {"apply": [True, False]})[0] == 200
     status, body = call(server, "GET", f"/api/plan/{job.id}")
     assert status == 200 and [c["apply"] for c in json.loads(body)["cuts"]] == [True, False]
+
+
+def test_job_environment_is_quiet_and_offline(monkeypatch, tmp_path):
+    seen = {}
+
+    class FakePopen:
+        stdout = iter(())
+        pid = 1
+
+        def __init__(self, argv, **kw):
+            seen["env"], seen["argv"] = kw["env"], argv
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(web.subprocess, "Popen", FakePopen)
+    state = web.State(tmp_path, "t")
+    folder = tmp_path / "uploads" / ("a" * 32)
+    folder.mkdir(parents=True)
+    (folder / "ep.mp3").write_bytes(b"x")
+    web.start_job(state, "plan", {"upload_id": "a" * 32, "no_ai": True})
+    assert seen["env"]["HF_HUB_DISABLE_TELEMETRY"] == "1" and "--no-ai" in seen["argv"]
