@@ -63,6 +63,7 @@ td.mute{color:var(--mute);font-family:var(--mono);font-size:13px}
 .outline{list-style:none;margin:0;padding:var(--s3);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-ctl);max-height:420px;overflow:auto;font-size:14px}
 .outline li{display:flex;gap:var(--s3);padding:var(--s1) 0}.outline time{font:13px var(--mono);color:var(--link);min-width:4.5em}
 .noOutline>#cuts{grid-column:span 12}
+.check{display:flex;gap:var(--s3);padding:var(--s2) 0;border-bottom:1px solid var(--line);align-items:baseline}.check b{min-width:1.5em;text-align:center}.check .d{color:var(--mute);font-size:14px}.check .f{display:block;color:var(--mute);font-size:13px}.check.ok b{color:var(--ok)}.check.warn b{color:var(--warn)}.check.fail b{color:var(--bad)}.estimate{background:color-mix(in srgb,var(--primary) 25%,var(--card));border-radius:var(--r-ctl);padding:var(--s3);margin-top:var(--s4);font-size:14px}.estimate small{display:block;color:var(--mute);margin-top:var(--s1)}
 .mini{padding:2px 8px;font-size:13px;font-weight:400;white-space:nowrap}
 .listen{display:flex;gap:var(--s3);align-items:center;flex-wrap:wrap;margin:0 0 var(--s3)}.listen audio{height:36px;max-width:100%}
 .result{padding:var(--s2) 0;border-bottom:1px solid var(--line)}.result audio{display:block;width:100%;margin-top:var(--s1)}
@@ -77,8 +78,15 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
     <h1>Podcast 剪輯工具</h1>
     <p class="sub">全程在你自己的電腦上執行，音檔不會上傳到任何地方（AI 建議只透過你本機已登入的 AI 命令列工具取得）。</p>
   </div>
+  <button class="ghost mini" id="doctorbtn" style="margin-left:auto">環境自我檢查</button>
 </header>
 <div id="envnote"></div>
+<section class="card" id="sdoctor" hidden>
+  <h2>環境自我檢查</h2>
+  <div id="doctorrows"></div>
+  <div class="actions"><button class="ghost" id="doctorredo">重新檢查</button><button class="ghost" id="doctorai">連 AI 一起測</button></div>
+  <p class="sub" style="margin-top:8px">「連 AI 一起測」會送出一個很短的提問，確認 AI 工具已登入，會用掉極少量的用量。</p>
+</section>
 
 <section class="card span7" id="s1">
   <p class="label">步驟 1</p>
@@ -87,6 +95,11 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
   <input type="file" id="file" hidden accept="audio/*,video/mp4,video/webm,video/x-matroska,.mp3,.m4a,.wav,.flac,.ogg,.aac,.opus,.mp4,.mkv,.webm">
   <div class="bar" id="upbar" hidden><i></i></div>
   <p id="upmsg" class="sub" style="margin-top:8px" aria-live="polite"></p>
+  <div id="srtbox" hidden style="margin-top:12px">
+    <button class="ghost mini" id="srtbtn">附上字幕檔（選填，可跳過語音辨識）</button>
+    <input type="file" id="srtfile" hidden accept=".srt">
+    <span class="sub" id="srtmsg" aria-live="polite"></span>
+  </div>
 </section>
 
 <aside class="card span5">
@@ -122,6 +135,7 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
     <label class="row"><span>影片形狀</span><select id="aspect"><option value="9:16">直式 9:16</option><option value="1:1">方形 1:1</option><option value="16:9">橫式 16:9</option></select></label>
     <label class="row"><span>最多幾段</span><input type="number" id="maxClips" value="10" min="1" max="30"></label>
   </div>
+  <label class="row" id="srtrow" hidden><span>字幕檔</span><label><input type="checkbox" id="useSrt" checked> 使用我附上的字幕檔，跳過語音辨識（時間要和這個音檔對得上）</label></label>
   <div id="optPlan" hidden>
     <label class="row"><span>AI 協助</span><label><input type="checkbox" id="useAI" checked> 讓 AI 找出講錯重來與雜音事故（需要本機已登入 AI 命令列工具）</label></label>
   </div>
@@ -132,6 +146,7 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
     <label class="row"><span>說明文字語言</span><select id="tlang"><option>繁體中文</option><option>简体中文</option><option>English</option><option>日本語</option></select></label>
     <label class="row" id="gpurow"><span>使用顯示卡加速</span><select id="device"><option value="cpu" selected>否（較穩）</option><option value="cuda">是（NVIDIA，需另外安裝）</option></select></label>
   </details>
+  <div class="estimate" id="estimate" hidden></div>
   <div class="actions"><button id="go">開始</button></div>
 </section>
 
@@ -199,7 +214,7 @@ async function api(path, opts = {}) {
 const post = (path, body) => api(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
 const clock = s => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
   return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0"); };
-let upload = null, jobId = null, planJob = null, planCuts = [], where = "";
+let hasSrt = false, upload = null, jobId = null, planJob = null, planCuts = [], where = "";
 
 api("/api/env").then(env => {
   where = env.workdir;
@@ -232,7 +247,8 @@ function sendFile(file) {
   x.onload = () => {
     let data = {}; try { data = JSON.parse(x.responseText); } catch (_) {}
     if (x.status !== 200) { $("#upmsg").textContent = "失敗：" + (data.error || x.status); return; }
-    upload = data; $("#upmsg").textContent = "已選擇：" + data.name; show("#s2");
+    upload = data; hasSrt = false; $("#upmsg").textContent = "已選擇：" + data.name + (data.duration ? "（約 " + Math.round(data.duration / 60) + " 分鐘）" : "");
+    show("#srtbox"); $("#srtmsg").textContent = ""; show("#srtrow", false); show("#s2"); refreshEstimate();
   };
   x.onerror = () => { $("#upmsg").textContent = "上傳失敗"; };
   x.send(file);
@@ -253,20 +269,76 @@ $("#preset").onchange = applyPreset;
 ["minSec", "maxSec", "aspect"].forEach(id => $("#" + id).addEventListener("change", () => { $("#preset").value = "custom"; }));
 applyPreset();
 
+$("#srtbtn").onclick = () => $("#srtfile").click();
+$("#srtfile").onchange = async () => {
+  const f = $("#srtfile").files[0]; if (!f || !upload) return;
+  const msg = $("#srtmsg"); msg.textContent = "上傳字幕檔中…";
+  try {
+    const r = await fetch("/api/subtitles?for=" + upload.upload_id, {method: "PUT", headers: {"X-Token": T}, body: f});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    hasSrt = true; show("#srtrow"); $("#useSrt").checked = true;
+    msg.textContent = "已附上 " + f.name + "：" + d.cues + " 句字幕" + (d.mismatch ? "。注意：字幕比音檔長很多，請確認是同一集。" : "。");
+  } catch (e) { hasSrt = false; show("#srtrow", false); msg.textContent = "字幕檔無法使用：" + e.message; }
+  refreshEstimate();
+};
+
+const fmtSec = s => s < 90 ? "約 " + Math.max(1, Math.round(s)) + " 秒" : "約 " + Math.round(s / 60) + " 分鐘";
+let estTimer = null;
+function refreshEstimate() { clearTimeout(estTimer); estTimer = setTimeout(doEstimate, 250); }
+async function doEstimate() {
+  const box = $("#estimate"); if (!upload) return;
+  const body = currentRequest(); if (!body) return;
+  try {
+    const d = await post("/api/estimate", {kind: body.kind, upload_id: upload.upload_id, options: body.options});
+    if (!d.estimate) { show("#estimate", false); return; }
+    const e = d.estimate, parts = [];
+    if (e.transcribe_sec) parts.push("語音辨識" + fmtSec(e.transcribe_sec));
+    if (e.ai_calls) parts.push("AI " + e.ai_calls + " 次呼叫（" + fmtSec(e.ai_sec) + "）");
+    box.replaceChildren(el("div", "預估：" + (parts.join("、") || "幾乎立刻完成") + (e.total_sec ? "，合計" + fmtSec(e.total_sec) : "") + "。"));
+    box.appendChild(el("small", e.notes.join(" "))); show("#estimate");
+  } catch (_) { show("#estimate", false); }
+}
+["whisper", "device", "backend", "useAI", "useSrt", "maxClips"].forEach(id => $("#" + id).addEventListener("change", refreshEstimate));
+document.querySelectorAll("input[name=mode]").forEach(r => r.addEventListener("change", refreshEstimate));
+
+const GLYPH = {ok: "✓", warn: "!", fail: "✗", info: "·"};
+async function runDoctor(ai) {
+  show("#sdoctor"); const box = $("#doctorrows"); box.replaceChildren(el("p", ai ? "檢查中，連 AI 測試可能要等幾十秒…" : "檢查中…", "sub"));
+  try {
+    const d = await api("/api/doctor?backend=" + encodeURIComponent($("#backend").value || "claude") + (ai ? "&ai=1" : ""));
+    box.replaceChildren();
+    d.checks.forEach(c => {
+      const row = el("div", null, "check " + c.status), body = el("div");
+      row.appendChild(el("b", GLYPH[c.status] || "·"));
+      const head = el("div"); head.appendChild(el("span", c.name + "：")); head.appendChild(el("span", c.detail, "d")); body.appendChild(head);
+      if (c.fix && c.status !== "ok") body.appendChild(el("span", "→ " + c.fix, "f"));
+      row.appendChild(body); box.appendChild(row);
+    });
+  } catch (e) { box.replaceChildren(el("p", "檢查失敗：" + e.message, "note bad")); }
+}
+$("#doctorbtn").onclick = () => runDoctor(false);
+$("#doctorredo").onclick = () => runDoctor(false);
+$("#doctorai").onclick = () => runDoctor(true);
+
+function currentRequest() {
+  if (!upload) return null;
+  const mode = modeOf(), use_srt = hasSrt && $("#useSrt").checked;
+  if (mode === "clips") {
+    const formats = [...document.querySelectorAll(".fmt:checked")].map(c => c.value);
+    return {kind: "clips", upload_id: upload.upload_id, options: {...common(), use_srt, formats, max_clips: +$("#maxClips").value,
+      min_sec: +$("#minSec").value, max_sec: +$("#maxSec").value, aspect: $("#aspect").value}};
+  }
+  return {kind: "plan", upload_id: upload.upload_id, options: {...common(), use_srt, no_ai: !$("#useAI").checked}};
+}
+
 function common() {
   return {backend: $("#backend").value, whisper_model: $("#whisper").value, language: $("#lang").value, title_language: $("#tlang").value, device: $("#device").value};
 }
 
 $("#go").onclick = async () => {
-  const mode = modeOf(); let body;
-  if (mode === "clips") {
-    const formats = [...document.querySelectorAll(".fmt:checked")].map(c => c.value);
-    body = {kind: "clips", upload_id: upload.upload_id, options: {...common(), formats, max_clips: +$("#maxClips").value,
-      min_sec: +$("#minSec").value, max_sec: +$("#maxSec").value, aspect: $("#aspect").value}};
-  } else {
-    body = {kind: "plan", upload_id: upload.upload_id, options: {...common(), no_ai: !$("#useAI").checked}};
-  }
-  try { await run(body, mode === "clips" ? "正在挑選精彩片段並切出檔案…" : "正在分析整集…"); }
+  const body = currentRequest(); if (!body) return;
+  try { await run(body, body.kind === "clips" ? "正在挑選精彩片段並切出檔案…" : "正在分析整集…"); }
   catch (e) { alert(e.message); }
 };
 

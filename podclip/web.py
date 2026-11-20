@@ -42,6 +42,8 @@ WHISPER_MODELS = ("tiny", "base", "small", "medium")
 LANGUAGES = ("", "zh", "en", "ja", "ko")
 TITLE_LANGUAGES = ("繁體中文", "简体中文", "English", "日本語")
 OUT_EXT = (".mp3", ".m4a", ".wav")
+SUBTITLES = "subtitles.srt"  # the optional subtitle file attached to an upload
+MAX_SUBTITLES = 20 * 1024 * 1024
 _WINDOWS_DEVICES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 
@@ -53,6 +55,16 @@ class ApiError(Exception):
 
 AUDIO_TYPES = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav", ".flac": "audio/flac", ".ogg": "audio/ogg",
                ".opus": "audio/ogg", ".aac": "audio/aac", ".mp4": "audio/mp4", ".webm": "audio/webm"}
+
+
+def audio_duration(path: Path) -> float | None:
+    """Length in seconds via ffprobe, or None when it cannot be read (the page then shows no estimate)."""
+    from .edit import probe_duration
+    from .render import RenderError
+    try:
+        return probe_duration(path)
+    except (RenderError, OSError):
+        return None
 
 
 def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
@@ -113,10 +125,14 @@ class State:
         folder = self.workdir / "uploads" / upload_id
         if not _HEX.fullmatch(upload_id) or not folder.is_dir():
             raise ApiError(400, "unknown upload")
-        files = [p for p in folder.iterdir() if p.is_file()]
+        files = [p for p in folder.iterdir() if p.is_file() and p.name != SUBTITLES]
         if len(files) != 1:
             raise ApiError(400, "unknown upload")
         return files[0]
+
+    def upload_srt(self, upload_id: str) -> Path | None:
+        path = self.upload_file(upload_id).parent / SUBTITLES
+        return path if path.is_file() else None
 
 
 # ----------------------------------------------------------------- option checks ---
@@ -140,6 +156,16 @@ def _backend_arg(o: dict) -> list[str]:
     return ["--backend", _choice(o, "backend", names, "claude")]
 
 
+def _srt_arg(o: dict, audio: Path) -> list[str]:
+    """``--srt`` for the subtitle file attached to this upload, when the page asked to use it."""
+    if not o.get("use_srt"):
+        return []
+    path = audio.parent / SUBTITLES
+    if not path.is_file():
+        raise ApiError(400, "no subtitle file was attached")
+    return ["--srt", str(path)]
+
+
 def _common(o: dict) -> list[str]:
     args = [*_backend_arg(o),
             "--device", _choice(o, "device", ("cpu", "cuda"), "cpu"),
@@ -159,12 +185,12 @@ def build_argv(kind: str, o: dict, audio: Path | None, folder: Path) -> list[str
         low, high = _number(o, "min_sec", 10, 600, 45), _number(o, "max_sec", 10, 900, 180)
         if low > high:
             raise ApiError(400, "min_sec is larger than max_sec")
-        return ["run", str(audio), "--out", str(out), "--formats", ",".join(formats),
+        return ["run", str(audio), "--out", str(out), *_srt_arg(o, audio), "--formats", ",".join(formats),
                 "--max-clips", str(int(_number(o, "max_clips", 1, 30, 10))),
                 "--min-sec", str(low), "--max-sec", str(high), "--aspect", _choice(o, "aspect", tuple(ASPECTS), "9:16"),
                 *_common(o)]
     if kind == "plan":
-        return ["edit-plan", str(audio), "--out", str(out), *_common(o), *(["--no-ai"] if o.get("no_ai") else [])]
+        return ["edit-plan", str(audio), "--out", str(out), *_srt_arg(o, audio), *_common(o), *(["--no-ai"] if o.get("no_ai") else [])]
     if kind == "render":
         ext = _choice(o, "format", OUT_EXT, ".mp3")
         srts = sorted(out.glob("*.srt"))
@@ -213,6 +239,7 @@ def start_job(state: State, kind: str, o: dict) -> Job:
         job.source = source
         env ={**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
                "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_VERBOSITY": "error", "PYTHONWARNINGS": "ignore",
+               "PODCLIP_STATS": str(state.workdir / "speed.json"),
                "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).resolve().parent.parent),
                                                            os.environ.get("PYTHONPATH", "")]))}
         job.proc = subprocess.Popen([sys.executable, "-m", "podclip.cli", *argv], cwd=folder, env=env, text=True,
@@ -397,6 +424,17 @@ class Handler(BaseHTTPRequestHandler):
         route = (method, parts[0] if parts else "")
         if route == ("GET", "env"):
             return self._json({**environment(), "workdir": str(st.workdir)})
+        if route == ("GET", "doctor"):
+            from .doctor import run_checks
+            backend = (query.get("backend") or ["claude"])[0]
+            if backend not in tuple(b["name"] for b in backend_status()):
+                raise ApiError(400, "unknown backend")
+            ai = (query.get("ai") or [""])[0] == "1"
+            return self._json({"checks": run_checks(st.workdir, ai=ai, backend=backend)})
+        if route == ("POST", "estimate"):
+            return self._json(self._estimate(self._body()))
+        if route == ("PUT", "subtitles"):
+            return self._subtitles((query.get("for") or [""])[0])
         if route == ("PUT", "upload"):
             return self._upload((query.get("name") or [""])[0])
         if route == ("POST", "start"):
@@ -453,7 +491,40 @@ class Handler(BaseHTTPRequestHandler):
         except BaseException:
             shutil.rmtree(folder, ignore_errors=True)
             raise
-        self._json({"upload_id": upload_id, "name": clean})
+        self._json({"upload_id": upload_id, "name": clean, "duration": audio_duration(target)})
+
+    def _estimate(self, data: dict) -> dict:
+        from .estimate import estimate
+        kind = data.get("kind")
+        if kind not in ("clips", "plan"):
+            raise ApiError(400, "unknown kind")
+        o = data.get("options") if isinstance(data.get("options"), dict) else {}
+        audio = self.state.upload_file(str(data.get("upload_id", "")))
+        duration = audio_duration(audio)
+        if not duration:
+            return {"estimate": None, "duration": None}
+        has_srt = bool(o.get("use_srt")) and self.state.upload_srt(str(data["upload_id"])) is not None
+        result = estimate(kind, duration, model=_choice(o, "whisper_model", WHISPER_MODELS, "small"),
+                          device=_choice(o, "device", ("cpu", "cuda"), "cpu"), has_srt=has_srt,
+                          use_ai=not o.get("no_ai"), stats_path=self.state.workdir / "speed.json")
+        return {"estimate": result, "duration": duration}
+
+    def _subtitles(self, upload_id: str) -> None:
+        """Attach a subtitle file to an upload so the run can skip speech recognition."""
+        from . import srt
+        audio = self.state.upload_file(upload_id)
+        self._body_read = True
+        length = int(self.headers.get("Content-Length") or 0)
+        if not 0 < length <= MAX_SUBTITLES:
+            self.close_connection = True
+            raise ApiError(413, "subtitle file is empty or too large")
+        cues = srt.parse(self.rfile.read(length).decode("utf-8-sig", errors="replace"))
+        if not cues:
+            raise ApiError(400, "cannot read any subtitles from that file")
+        srt.write(audio.parent / SUBTITLES, cues)
+        duration = audio_duration(audio)
+        mismatch = bool(duration and cues[-1].end > duration * 1.05 + 30)
+        self._json({"cues": len(cues), "last": cues[-1].end, "duration": duration, "mismatch": mismatch})
 
     def _zip(self, job_id: str) -> None:
         job = self.state.job(job_id)

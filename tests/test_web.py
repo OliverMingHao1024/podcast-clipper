@@ -264,3 +264,53 @@ def test_source_route_serves_only_the_server_chosen_upload(server, tmp_path):
     note.write_text("no")
     job.source = note
     assert _raw(server, f"/source/{job.id}?t={t}")[0] == 404  # only audio types
+
+
+def _upload_audio(server, name="ep.mp3"):
+    return json.loads(call(server, "PUT", f"/api/upload?name={name}", raw=b"abc")[1])["upload_id"]
+
+
+SRT = "1\n00:00:01,000 --> 00:00:03,000\n第一句\n\n2\n00:00:04,000 --> 00:00:06,000\n第二句\n"
+
+
+def test_subtitles_attach_validate_and_feed_the_run(server):
+    up = _upload_audio(server)
+    assert call(server, "PUT", f"/api/subtitles?for={up}", raw=b"not subtitles at all")[0] == 400
+    assert call(server, "PUT", f"/api/subtitles?for={'0' * 32}", raw=SRT.encode())[0] == 400  # unknown upload
+    assert call(server, "PUT", f"/api/subtitles?for={up}", raw=b"")[0] in (400, 413)
+    status, body = call(server, "PUT", f"/api/subtitles?for={up}", raw=SRT.encode())
+    assert status == 200 and json.loads(body)["cues"] == 2
+    saved = server.state.upload_srt(up)
+    assert saved is not None and "第一句" in saved.read_text(encoding="utf-8")
+    assert server.state.upload_file(up).name == "ep.mp3"          # the subtitle file is not mistaken for the audio
+    argv = web.build_argv("plan", {"use_srt": True, "no_ai": True}, server.state.upload_file(up), server.state.workdir / "j")
+    assert argv[argv.index("--srt") + 1] == str(saved)
+    assert "--srt" not in web.build_argv("plan", {}, server.state.upload_file(up), server.state.workdir / "j")
+
+
+def test_use_srt_without_a_file_is_rejected(server):
+    up = _upload_audio(server)
+    with pytest.raises(web.ApiError):
+        web.build_argv("clips", {"use_srt": True, "formats": ["audio"]}, server.state.upload_file(up), server.state.workdir / "j")
+
+
+def test_estimate_endpoint(server, monkeypatch):
+    up = _upload_audio(server)
+    monkeypatch.setattr(web, "audio_duration", lambda _p: 3744.0)
+    status, body = call(server, "POST", "/api/estimate", {"kind": "plan", "upload_id": up, "options": {"whisper_model": "small"}})
+    data = json.loads(body)
+    assert status == 200 and data["estimate"]["ai_calls"] == 4 and data["estimate"]["transcribe_sec"] > 0
+    call(server, "PUT", f"/api/subtitles?for={up}", raw=SRT.encode())
+    data = json.loads(call(server, "POST", "/api/estimate", {"kind": "clips", "upload_id": up, "options": {"use_srt": True}})[1])
+    assert data["estimate"]["transcribe_sec"] == 0 and data["estimate"]["ai_calls"] == 2
+    assert call(server, "POST", "/api/estimate", {"kind": "notes", "upload_id": up})[0] == 400
+    assert call(server, "POST", "/api/estimate", {"kind": "clips", "upload_id": up, "options": {"whisper_model": "--x"}})[0] == 400
+    monkeypatch.setattr(web, "audio_duration", lambda _p: None)
+    assert json.loads(call(server, "POST", "/api/estimate", {"kind": "clips", "upload_id": up})[1])["estimate"] is None
+
+
+def test_doctor_endpoint(server, monkeypatch):
+    status, body = call(server, "GET", "/api/doctor")
+    assert status == 200 and any(c["id"] == "python" for c in json.loads(body)["checks"])
+    assert call(server, "GET", "/api/doctor?backend=rm")[0] == 400
+    assert call(server, "GET", "/api/doctor", token=False)[0] == 403

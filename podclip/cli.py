@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
+import time
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -30,6 +32,21 @@ def _backend(args: argparse.Namespace):
         raise SystemExit(str(error))
 
 
+def _transcribe(src: Path, args: argparse.Namespace) -> list[srt.Cue]:
+    from .transcribe import transcribe
+    print("transcribing locally...", file=sys.stderr)
+    start = time.time()
+    cues = transcribe(src, model=args.whisper_model, language=args.language, device=args.device)
+    try:  # remember this computer's speed so the next estimate is realistic; never let that fail a run
+        from .edit import probe_duration
+        from .estimate import record_speed
+        record_speed(os.environ.get("PODCLIP_STATS"), args.whisper_model, args.device, probe_duration(src),
+                     time.time() - start)
+    except Exception:  # noqa: BLE001
+        pass
+    return cues
+
+
 def _run(args: argparse.Namespace) -> int:
     src = Path(args.input).expanduser().resolve()
     if not src.is_file() or src.suffix.lower() not in AUDIO_EXT:
@@ -43,9 +60,7 @@ def _run(args: argparse.Namespace) -> int:
     if args.srt:
         cues = srt.read(Path(args.srt).expanduser())
     else:
-        from .transcribe import transcribe
-        print("transcribing locally...", file=sys.stderr)
-        cues = transcribe(src, model=args.whisper_model, language=args.language, device=args.device)
+        cues = _transcribe(src, args)
         Path(args.out).mkdir(parents=True, exist_ok=True)
         srt.write(Path(args.out) / f"{src.stem}.srt", cues)
 
@@ -142,11 +157,10 @@ def _edit_plan(args: argparse.Namespace) -> int:
     out.mkdir(parents=True, exist_ok=True)
     if args.srt:
         cues = srt.read(Path(args.srt).expanduser())
+        print(f"using {len(cues)} subtitles from {args.srt}, skipping transcription", file=sys.stderr)
     else:
-        from .transcribe import transcribe
-        print("transcribing locally...", file=sys.stderr)
-        cues = transcribe(src, model=args.whisper_model, language=args.language, device=args.device)
-        srt.write(out / f"{src.stem}.srt", cues)
+        cues = _transcribe(src, args)
+    srt.write(out / f"{src.stem}.srt", cues)  # edit-render and notes read the subtitles from here
     backend = None if args.no_ai else _backend(args)
     print("looking for silences, fillers" + ("" if args.no_ai else " and AI suggestions") + "...", file=sys.stderr)
     plan = edit.build_plan(src, cues, backend, language=args.title_language)
@@ -181,6 +195,19 @@ def _notes(args: argparse.Namespace) -> int:
         print(f"notes: {out}", file=sys.stderr)
     print(text)
     return 0
+
+
+def _doctor(args: argparse.Namespace) -> int:
+    from .doctor import run_checks
+    marks = {"ok": "[OK]", "warn": "[!!]", "fail": "[XX]", "info": "[..]"}
+    rows = run_checks(Path(args.workdir).expanduser(), ai=args.ai, backend=args.backend)
+    for r in rows:
+        print(f"{marks[r['status']]} {r['name']}: {r['detail']}")
+        if r["fix"] and r["status"] != "ok":
+            print(f"     -> {r['fix']}")
+    failed = [r for r in rows if r["status"] == "fail"]
+    print("\nready" if not failed else f"\n{len(failed)} problem(s) to fix first")
+    return 1 if failed else 0
 
 
 def _add_backend_args(p: argparse.ArgumentParser) -> None:
@@ -231,6 +258,11 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--srt", help="original subtitle file; writes a remapped .srt next to the output")
     d.add_argument("--no-loudnorm", action="store_true")
     d.add_argument("-v", "--verbose", action="store_true")
+    c = sub.add_parser("doctor", help="check that this computer is ready (ffmpeg, speech recognition, AI tool, disk)")
+    c.add_argument("--ai", action="store_true", help="also send one tiny prompt to the AI tool to test the login")
+    c.add_argument("--backend", choices=("claude", *named_commands()), default="claude", help="AI tool for --ai")
+    c.add_argument("--workdir", default="podclip-work")
+    c.add_argument("-v", "--verbose", action="store_true")
     m = sub.add_parser("more", help="cut more clips from the alternates an earlier `run` kept")
     m.add_argument("out", help="the --out folder of the earlier run (contains clips.json)")
     m.add_argument("--count", type=int, default=1)
@@ -257,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
             return _notes(args)
         if args.command == "more":
             return _more(args)
+        if args.command == "doctor":
+            return _doctor(args)
         if args.command == "edit-render":
             return _edit_render(args)
         return _run(args)
