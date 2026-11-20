@@ -201,3 +201,12 @@ def test_job_reports_alternates_and_more_needs_a_manifest(server, tmp_path):
     assert argv[0] == "more" and argv[2:] == ["--count", "1"]
     (job.folder / "out" / "clips.json").unlink()
     assert call(server, "POST", "/api/start", {"kind": "more", "plan_job": job.id, "options": {}})[0] == 400
+
+
+def test_clip_options_carry_length_and_shape(tmp_path):
+    argv = web.build_argv("clips", {"formats": ["audio"], "min_sec": 30, "max_sec": 90, "aspect": "1:1"}, tmp_path / "a.mp3", tmp_path)
+    assert argv[argv.index("--min-sec") + 1] == "30" and argv[argv.index("--max-sec") + 1] == "90"
+    assert argv[argv.index("--aspect") + 1] == "1:1"
+    for bad in ({"aspect": "4:3"}, {"min_sec": 100, "max_sec": 50}, {"max_sec": 5000}):
+        with pytest.raises(web.ApiError):
+            web.build_argv("clips", {"formats": ["audio"], **bad}, tmp_path / "a.mp3", tmp_path)

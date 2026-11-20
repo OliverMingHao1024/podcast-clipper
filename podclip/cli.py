@@ -12,7 +12,7 @@ from pathlib import Path
 from . import __version__, srt
 from .finder import Clip, Config, find_clips_with_alternates
 from .llm import LLMError, make_backend, named_commands
-from .render import DEFAULT_FONT, RenderError, cut_audio, waveform_video, write_srt
+from .render import ASPECTS, DEFAULT_FONT, RenderError, cut_audio, waveform_video, write_srt
 
 AUDIO_EXT = {".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".opus", ".mp4", ".mkv", ".webm"}
 FORMATS = ("audio", "srt", "video")
@@ -49,14 +49,17 @@ def _run(args: argparse.Namespace) -> int:
         Path(args.out).mkdir(parents=True, exist_ok=True)
         srt.write(Path(args.out) / f"{src.stem}.srt", cues)
 
-    cfg = Config(min_sec=args.min_sec, max_sec=args.max_sec, threshold=args.threshold,
-                 max_clips=args.max_clips, language=args.title_language)
+    # the ideal length the model is told about follows the allowed range (45-180 s gives the old 60-120 s)
+    cfg = Config(min_sec=args.min_sec, max_sec=args.max_sec, target_lo=max(args.min_sec, round(args.max_sec / 3)),
+                 target_hi=round(args.max_sec * 2 / 3), threshold=args.threshold, max_clips=args.max_clips,
+                 language=args.title_language)
     print(f"{len(cues)} cues, asking the model for clips...", file=sys.stderr)
     clips, alternates = find_clips_with_alternates(cues, _backend(args), cfg)
 
     out = Path(args.out).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
-    options = {"formats": formats, "audio_ext": args.audio_ext, "font": args.font, "wave_color": args.wave_color}
+    options = {"formats": formats, "audio_ext": args.audio_ext, "font": args.font, "wave_color": args.wave_color,
+               "aspect": args.aspect}
     manifest = [_render_clip(n, clip, src, cues, out, options, args.dry_run) for n, clip in enumerate(clips, 1)]
     srt_path = Path(args.srt).expanduser().resolve() if args.srt else out / f"{src.stem}.srt"
     _write_manifest(out, {"source": src.name, "source_path": str(src), "srt_path": str(srt_path), "options": options,
@@ -89,7 +92,8 @@ def _render_clip(n: int, clip: Clip, src: Path, cues: list[srt.Cue], out: Path, 
         audio = cut_audio(src, clip, base, options["audio_ext"]) if ("audio" in formats or "video" in formats) else None
         subs = write_srt(cues, clip, base) if "srt" in formats else None
         if "video" in formats and audio and subs:
-            waveform_video(audio, subs, clip.duration, base, font=options["font"], wave_color=options["wave_color"])
+            waveform_video(audio, subs, clip.duration, base, font=options["font"], wave_color=options["wave_color"],
+                           aspect=options.get("aspect", "9:16"))
         (folder / "post.txt").write_text(_post_text(clip), encoding="utf-8")
     return entry
 
@@ -207,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--device", choices=("cpu", "cuda"), default="cpu", help="Whisper device; cuda needs the gpu extra")
     r.add_argument("--font", default=DEFAULT_FONT)
     r.add_argument("--wave-color", default="0x6AA9FF", help="waveform colour as 0xRRGGBB")
+    r.add_argument("--aspect", choices=tuple(ASPECTS), default="9:16", help="video shape: 9:16 vertical, 1:1 square, 16:9 wide")
     r.add_argument("--dry-run", action="store_true", help="only write clips.json, cut nothing")
     r.add_argument("-v", "--verbose", action="store_true")
     e = sub.add_parser("edit-plan", help="find cuts in a whole uncut episode and write a reviewable plan")

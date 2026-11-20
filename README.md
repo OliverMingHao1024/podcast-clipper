@@ -41,6 +41,8 @@ AI 讀完整份逐字稿，挑出約 1～3 分鐘、有完整問答或完整觀�
 | `post.txt` | 貼文用標題、說明與話題標籤 |
 | `clips.json` | 所有片段的時間點清單，另保留未入選的備選片段 |
 
+網頁上可依**用途**一鍵帶入建議的片段長度與影片形狀（直式 9:16、方形 1:1、橫式 16:9），也能自訂。這些是建議值，不是平台規則，發布前請確認該平台目前的限制。
+
 沒選上的高分候選會留作**備選**：想要更多片段時，在網頁按「再多挑一段」（或用 `podclip more`），不必重新轉錄、也不用再呼叫 AI。
 
 ### 整集剪輯（初剪）
@@ -81,6 +83,7 @@ AI 讀完整份逐字稿，挑出約 1～3 分鐘、有完整問答或完整觀�
 ```bash
 pip install -e ".[asr]"                 # 本機語音辨識；NVIDIA 顯示卡用 ".[gpu]"
 podclip run episode.mp3                 # 挑精華片段
+podclip run episode.mp3 --aspect 1:1 --min-sec 45 --max-sec 120   # 方形影片、指定長度
 podclip more out                        # 從備選再切出一段
 podclip edit-plan episode.mp3           # 整集剪輯：先產生清單 plan.json / plan.md
 podclip edit-render edit/plan.json      # 套用清單輸出剪好的整集

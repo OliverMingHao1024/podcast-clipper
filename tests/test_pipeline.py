@@ -163,3 +163,22 @@ def test_more_cuts_the_next_alternate_without_a_model_call(tmp_path):
     assert (out / manifest["clips"][1]["folder"] / "clip.mp3").stat().st_size > 0
     with pytest.raises(SystemExit):  # nothing left
         main(["more", str(out)])
+
+
+@needs_ffmpeg
+@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe missing")
+@pytest.mark.parametrize("aspect,size", [("1:1", (1080, 1080)), ("16:9", (1920, 1080))])
+def test_video_follows_the_chosen_aspect(tmp_path, aspect, size):
+    audio = tmp_path / "ep.mp3"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=400",
+                    str(audio)], check=True)
+    srt.write(tmp_path / "ep.srt", make_cues())
+    reply = tmp_path / "reply.py"
+    reply.write_text(f"import sys; sys.stdin.read(); print({answer((10, 20, '短', 0.9))!r})", encoding="utf-8")
+    out = tmp_path / "out"
+    assert main(["run", str(audio), "--srt", str(tmp_path / "ep.srt"), "--out", str(out), "--backend", "cmd",
+                 "--cmd", f'python "{reply}"', "--min-sec", "30", "--max-sec", "90", "--aspect", aspect]) == 0
+    video = next(out.glob("*/clip.mp4"))
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                            "-of", "csv=p=0", str(video)], capture_output=True, text=True, check=True).stdout.strip()
+    assert tuple(map(int, probe.split(","))) == size

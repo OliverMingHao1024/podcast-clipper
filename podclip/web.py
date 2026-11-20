@@ -32,6 +32,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .cli import AUDIO_EXT
 from .llm import backend_status
+from .render import ASPECTS
 from .web_page import PAGE
 
 MAX_UPLOAD = 4 * 1024 ** 3
@@ -137,7 +138,8 @@ def build_argv(kind: str, o: dict, audio: Path | None, folder: Path) -> list[str
             raise ApiError(400, "min_sec is larger than max_sec")
         return ["run", str(audio), "--out", str(out), "--formats", ",".join(formats),
                 "--max-clips", str(int(_number(o, "max_clips", 1, 30, 10))),
-                "--min-sec", str(low), "--max-sec", str(high), *_common(o)]
+                "--min-sec", str(low), "--max-sec", str(high), "--aspect", _choice(o, "aspect", tuple(ASPECTS), "9:16"),
+                *_common(o)]
     if kind == "plan":
         return ["edit-plan", str(audio), "--out", str(out), *_common(o), *(["--no-ai"] if o.get("no_ai") else [])]
     if kind == "render":

@@ -108,6 +108,15 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
       <label><input type="checkbox" class="fmt" value="audio" checked> 音檔</label>
       <label><input type="checkbox" class="fmt" value="srt" checked> 字幕</label>
       <label><input type="checkbox" class="fmt" value="video"> 波形影片</label></label>
+    <label class="row"><span>用途</span><select id="preset">
+      <option value="short">直式短影音（Reels／Shorts／TikTok／抖音）</option>
+      <option value="square">方形貼文（IG／Facebook／Threads）</option>
+      <option value="wide">橫式影片（YouTube／Facebook）</option>
+      <option value="teaser">Podcast 精華預告（較長）</option>
+      <option value="custom">自訂長度與形狀</option>
+    </select></label>
+    <label class="row"><span>片段長度（秒）</span><input type="number" id="minSec" min="10" max="600" aria-label="最短秒數"> 到 <input type="number" id="maxSec" min="10" max="900" aria-label="最長秒數"></label>
+    <label class="row"><span>影片形狀</span><select id="aspect"><option value="9:16">直式 9:16</option><option value="1:1">方形 1:1</option><option value="16:9">橫式 16:9</option></select></label>
     <label class="row"><span>最多幾段</span><input type="number" id="maxClips" value="10" min="1" max="30"></label>
   </div>
   <div id="optPlan" hidden>
@@ -230,6 +239,16 @@ document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = () => {
   show("#optClips", modeOf() === "clips"); show("#optPlan", modeOf() === "plan");
 });
 
+// Suggested lengths per use, not platform rules: check the platform's current limits before posting.
+const PRESETS = {short: [30, 90, "9:16"], square: [45, 120, "1:1"], wide: [60, 180, "16:9"], teaser: [60, 180, "9:16"]};
+function applyPreset() {
+  const p = PRESETS[$("#preset").value];
+  if (p) { $("#minSec").value = p[0]; $("#maxSec").value = p[1]; $("#aspect").value = p[2]; }
+}
+$("#preset").onchange = applyPreset;
+["minSec", "maxSec", "aspect"].forEach(id => $("#" + id).addEventListener("change", () => { $("#preset").value = "custom"; }));
+applyPreset();
+
 function common() {
   return {backend: $("#backend").value, whisper_model: $("#whisper").value, language: $("#lang").value, title_language: $("#tlang").value, device: $("#device").value};
 }
@@ -238,7 +257,8 @@ $("#go").onclick = async () => {
   const mode = modeOf(); let body;
   if (mode === "clips") {
     const formats = [...document.querySelectorAll(".fmt:checked")].map(c => c.value);
-    body = {kind: "clips", upload_id: upload.upload_id, options: {...common(), formats, max_clips: +$("#maxClips").value}};
+    body = {kind: "clips", upload_id: upload.upload_id, options: {...common(), formats, max_clips: +$("#maxClips").value,
+      min_sec: +$("#minSec").value, max_sec: +$("#maxSec").value, aspect: $("#aspect").value}};
   } else {
     body = {kind: "plan", upload_id: upload.upload_id, options: {...common(), no_ai: !$("#useAI").checked}};
   }
