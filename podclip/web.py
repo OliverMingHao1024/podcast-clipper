@@ -135,6 +135,12 @@ def build_argv(kind: str, o: dict, audio: Path | None, folder: Path) -> list[str
         srts = sorted(out.glob("*.srt"))
         return ["edit-render", str(out / "plan.json"), "--out", str(out / f"episode_edited{ext}"),
                 *(["--srt", str(srts[0])] if srts else []), *(["--no-loudnorm"] if o.get("no_loudnorm") else [])]
+    if kind == "notes":
+        subs = next((p for p in (out / "episode_edited.srt", *sorted(out.glob("*.srt"))) if p.is_file()), None)
+        if subs is None:
+            raise ApiError(400, "no subtitles to write notes from")
+        return ["notes", str(subs), "--out", str(out / "episode_notes.txt"), "--backend", "claude",
+                "--title-language", _choice(o, "title_language", TITLE_LANGUAGES, "繁體中文")]
     raise ApiError(400, "unknown kind")
 
 
@@ -154,10 +160,10 @@ def start_job(state: State, kind: str, o: dict) -> Job:
         if state.busy():
             raise ApiError(409, "another job is still running")
         audio = None
-        if kind == "render":
+        if kind in ("render", "notes"):
             folder = state.job(str(o.get("plan_job", ""))).folder
-            if not (folder / "out" / "plan.json").is_file():
-                raise ApiError(400, "that job has no plan")
+            if not (folder / "out").is_dir() or (kind == "render" and not (folder / "out" / "plan.json").is_file()):
+                raise ApiError(400, "that job has no output to work from")
         else:
             audio = state.upload_file(str(o.get("upload_id", "")))
             folder = state.workdir / "jobs" / uuid.uuid4().hex

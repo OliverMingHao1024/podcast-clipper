@@ -121,6 +121,19 @@ def _edit_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def _notes(args: argparse.Namespace) -> int:
+    from . import notes
+    cues = srt.read(Path(args.srt).expanduser())
+    text = notes.episode_notes(cues, _backend(args), language=args.title_language).render()
+    if args.out:
+        out = Path(args.out).expanduser().resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        print(f"notes: {out}", file=sys.stderr)
+    print(text)
+    return 0
+
+
 def _add_backend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--backend", choices=("claude", "cmd"), default="claude")
     p.add_argument("--model", help="model name passed to the claude CLI")
@@ -167,6 +180,12 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--srt", help="original subtitle file; writes a remapped .srt next to the output")
     d.add_argument("--no-loudnorm", action="store_true")
     d.add_argument("-v", "--verbose", action="store_true")
+    n = sub.add_parser("notes", help="write the episode blurb (summary + 本集重點 list) from a subtitle file")
+    n.add_argument("srt", help="subtitle file of the (edited) episode")
+    n.add_argument("--out", help="also write the text to this file")
+    _add_backend_args(n)
+    n.add_argument("--title-language", default="繁體中文")
+    n.add_argument("-v", "--verbose", action="store_true")
     w = sub.add_parser("web", help="start the local browser UI (for people who do not use a terminal)")
     w.add_argument("--workdir", default="podclip-work", help="where uploads and results are kept")
     w.add_argument("--port", type=int, default=0, help="0 = pick a free port")
@@ -179,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "edit-plan":
             return _edit_plan(args)
+        if args.command == "notes":
+            return _notes(args)
         if args.command == "edit-render":
             return _edit_render(args)
         return _run(args)

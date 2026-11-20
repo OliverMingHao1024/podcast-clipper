@@ -108,6 +108,12 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:14px}
   <h2 id="donetitle">完成</h2>
   <div id="donenote"></div>
   <div class="files" id="files"></div>
+  <div id="notesbox">
+    <div class="actions"><button class="ghost" id="notesbtn">產生本集介紹文案</button></div>
+    <p class="sub" id="notesmsg" style="margin:8px 0 0"></p>
+    <pre id="notestext" hidden></pre>
+    <div class="actions"><button class="ghost" id="notescopy" hidden>複製文案</button></div>
+  </div>
   <p class="sub" id="where"></p>
   <div class="actions"><button class="ghost" onclick="location.reload()">處理另一個檔案</button></div>
 </section>
@@ -234,7 +240,23 @@ $("#render").onclick = async () => {
   } catch (e) { alert(e.message); }
 };
 
+let notesFrom = null;
+$("#notesbtn").onclick = async () => {
+  const btn = $("#notesbtn"), msg = $("#notesmsg"); btn.disabled = true; msg.textContent = "AI 正在讀逐字稿、整理重點…";
+  try {
+    const r = await post("/api/start", {kind: "notes", plan_job: notesFrom, options: {title_language: $("#tlang").value}});
+    let d;
+    do { await new Promise(x => setTimeout(x, 1500)); d = await api("/api/job/" + r.job + "?since=0"); } while (d.status === "running");
+    if (d.status !== "done") throw new Error(d.lines.slice(-2).join(" ") || d.status);
+    const t = await fetch("/files/" + r.job + "/episode_notes.txt?t=" + encodeURIComponent(T)).then(x => x.text());
+    $("#notestext").textContent = t; show("#notestext"); show("#notescopy"); msg.textContent = "完成，可直接複製；也已存成 episode_notes.txt。";
+  } catch (e) { msg.textContent = "失敗：" + e.message; }
+  btn.disabled = false;
+};
+$("#notescopy").onclick = () => navigator.clipboard.writeText($("#notestext").textContent).then(() => { $("#notescopy").textContent = "已複製"; });
+
 function finish(d) {
+  notesFrom = jobId; $("#notestext").hidden = true; $("#notescopy").hidden = true; $("#notesmsg").textContent = "";
   show("#s3", false); show("#s5");
   $("#donetitle").textContent = d.kind === "render" ? "剪輯完成" : "片段完成";
   const box = $("#files"); box.replaceChildren();

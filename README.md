@@ -36,6 +36,16 @@ loudness-normalised (`--no-loudnorm` to skip) and the `.srt` is remapped to the 
 `--no-ai` skips the model call. Always read `plan.md`: the AI can over-cut (it once marked the hosts'
 self-introductions as "intro chatter").
 
+## Episode blurb (本集重點)
+
+```powershell
+podclip notes episode_edited.srt --out episode_notes.txt   # summary + a short "【本集重點】" topic list
+```
+
+Reads the subtitle file (use the remapped `episode_edited.srt` after `edit-render`), asks the model for
+short topic titles in time order, validates them, and prints text ready to paste. In the browser UI it is
+the "產生本集介紹文案" button on the finished page. Always proofread: it only knows what the transcript says.
+
 ## Design choices (security)
 
 - **No server by default** (only the optional `podclip web`, below), no telemetry, no publishing, no browser cookies, no runtime installs. `podclip web` listens on 127.0.0.1 only, checks Host/Origin and a per-run token, accepts only whitelisted options (never a path, `--cmd` or a shell string), serves downloads only from one job's `out/` folder, and renders model text with `textContent`. `start.bat` is the only place that installs anything, once, when you run it.
