@@ -29,6 +29,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .cli import AUDIO_EXT
+from .llm import backend_status
 from .web_page import PAGE
 
 MAX_UPLOAD = 4 * 1024 ** 3
@@ -107,8 +108,13 @@ def _number(o: dict, key: str, low: float, high: float, default: float) -> float
     return value
 
 
+def _backend_arg(o: dict) -> list[str]:
+    names = tuple(b["name"] for b in backend_status())
+    return ["--backend", _choice(o, "backend", names, "claude")]
+
+
 def _common(o: dict) -> list[str]:
-    args = ["--backend", "claude",
+    args = [*_backend_arg(o),
             "--device", _choice(o, "device", ("cpu", "cuda"), "cpu"),
             "--whisper-model", _choice(o, "whisper_model", WHISPER_MODELS, "small"),
             "--title-language", _choice(o, "title_language", TITLE_LANGUAGES, "繁體中文")]
@@ -140,7 +146,7 @@ def build_argv(kind: str, o: dict, audio: Path | None, folder: Path) -> list[str
         subs = next((p for p in (out / "episode_edited.srt", *sorted(out.glob("*.srt"))) if p.is_file()), None)
         if subs is None:
             raise ApiError(400, "no subtitles to write notes from")
-        return ["notes", str(subs), "--out", str(out / "episode_notes.txt"), "--backend", "claude",
+        return ["notes", str(subs), "--out", str(out / "episode_notes.txt"), *_backend_arg(o),
                 "--title-language", _choice(o, "title_language", TITLE_LANGUAGES, "繁體中文")]
     raise ApiError(400, "unknown kind")
 
@@ -230,7 +236,7 @@ def save_plan_flags(job: Job, flags: list) -> None:
 
 
 def environment() -> dict:
-    return {"ffmpeg": bool(shutil.which("ffmpeg")), "claude": bool(shutil.which("claude")),
+    return {"ffmpeg": bool(shutil.which("ffmpeg")), "backends": backend_status(),
             "whisper": find_spec("faster_whisper") is not None, "platform": sys.platform}
 
 

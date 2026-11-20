@@ -139,3 +139,12 @@ def test_unread_post_body_does_not_poison_the_connection(server, tmp_path):
     resp = conn.getresponse()
     assert resp.status == 200 and json.loads(resp.read())["status"] == "done"
     conn.close()
+
+
+def test_backend_must_be_a_known_name(monkeypatch, tmp_path):
+    monkeypatch.setenv("PODCLIP_BACKENDS", str(tmp_path / "none.json"))
+    argv = web.build_argv("plan", {"backend": "codex"}, tmp_path / "a.mp3", tmp_path)
+    assert argv[argv.index("--backend") + 1] == "codex"
+    for bad in ("cmd", "rm -rf", "--cmd", "gemini"):
+        with pytest.raises(web.ApiError):
+            web.build_argv("plan", {"backend": bad}, tmp_path / "a.mp3", tmp_path)

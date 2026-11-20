@@ -50,7 +50,7 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:14px}
 <body>
 <main>
 <h1>Podcast 剪輯工具</h1>
-<p class="sub">全程在你自己的電腦上執行，音檔不會上傳到任何地方（AI 建議只透過你本機已登入的 Claude 取得）。</p>
+<p class="sub">全程在你自己的電腦上執行，音檔不會上傳到任何地方（AI 建議只透過你本機已登入的 AI 命令列工具（如 Claude、Codex）取得）。</p>
 <div id="envnote"></div>
 
 <section class="card" id="s1">
@@ -75,9 +75,10 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:14px}
     <label class="row"><span>最多幾段</span><input type="number" id="maxClips" value="10" min="1" max="30"></label>
   </div>
   <div id="optPlan" hidden>
-    <label class="row"><span>AI 協助</span><label><input type="checkbox" id="useAI" checked> 讓 AI 找出講錯重來與雜音事故（需要本機已登入 Claude）</label></label>
+    <label class="row"><span>AI 協助</span><label><input type="checkbox" id="useAI" checked> 讓 AI 找出講錯重來與雜音事故（需要本機已登入 AI 命令列工具）</label></label>
   </div>
   <details><summary>進階設定</summary>
+    <label class="row" id="backendrow"><span>AI 工具</span><select id="backend"></select></label>
     <label class="row"><span>語音辨識品質</span><select id="whisper"><option value="tiny">最快（較不準）</option><option value="base">快</option><option value="small" selected>標準</option><option value="medium">最準（很慢）</option></select></label>
     <label class="row"><span>說話語言</span><select id="lang"><option value="">自動偵測</option><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="ko">한국어</option></select></label>
     <label class="row"><span>說明文字語言</span><select id="tlang"><option>繁體中文</option><option>简体中文</option><option>English</option><option>日本語</option></select></label>
@@ -147,7 +148,10 @@ api("/api/env").then(env => {
   const add = (cls, text) => { const n = el("div", text, "note " + cls); box.appendChild(n); };
   if (!env.ffmpeg) add("bad", "找不到 ffmpeg，無法切音檔。請先安裝 ffmpeg（見 README）。");
   if (!env.whisper) add("bad", "尚未安裝語音辨識（faster-whisper）。請用 start.bat 啟動，或依 README 安裝。");
-  if (!env.claude) add("warn", "找不到 claude 指令：AI 選段與 AI 剪輯建議將無法使用。整集剪輯可取消勾選「AI 協助」。");
+  const sel = $("#backend"); let first = null;
+  env.backends.forEach(b => { const o = el("option", b.name + (b.ready ? "" : "（未安裝）")); o.value = b.name; o.disabled = !b.ready; sel.appendChild(o); if (b.ready && !first) first = b.name; });
+  if (first) sel.value = first;
+  else add("warn", "找不到任何 AI 命令列工具（claude、codex…）：AI 選段、AI 剪輯建議與介紹文案將無法使用。整集剪輯可取消勾選「AI 協助」。");
 });
 
 const drop = $("#drop"), input = $("#file");
@@ -179,7 +183,7 @@ document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = () => {
 });
 
 function common() {
-  return {whisper_model: $("#whisper").value, language: $("#lang").value, title_language: $("#tlang").value, device: $("#device").value};
+  return {backend: $("#backend").value, whisper_model: $("#whisper").value, language: $("#lang").value, title_language: $("#tlang").value, device: $("#device").value};
 }
 
 $("#go").onclick = async () => {
@@ -254,7 +258,7 @@ let notesFrom = null;
 $("#notesbtn").onclick = async () => {
   const btn = $("#notesbtn"), msg = $("#notesmsg"); btn.disabled = true; msg.textContent = "AI 正在讀逐字稿、整理重點…";
   try {
-    const r = await post("/api/start", {kind: "notes", plan_job: notesFrom, options: {title_language: $("#tlang").value}});
+    const r = await post("/api/start", {kind: "notes", plan_job: notesFrom, options: {title_language: $("#tlang").value, backend: $("#backend").value}});
     let d;
     do { await new Promise(x => setTimeout(x, 1500)); d = await api("/api/job/" + r.job + "?since=0"); } while (d.status === "running");
     if (d.status !== "done") throw new Error(d.lines.slice(-2).join(" ") || d.status);

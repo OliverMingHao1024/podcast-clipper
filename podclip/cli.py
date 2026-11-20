@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import __version__, srt
 from .finder import Config, find_clips
-from .llm import ClaudeCLI, CommandBackend, LLMError
+from .llm import LLMError, make_backend, named_commands
 from .render import DEFAULT_FONT, RenderError, cut_audio, waveform_video, write_srt
 
 AUDIO_EXT = {".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".opus", ".mp4", ".mkv", ".webm"}
@@ -25,11 +25,10 @@ def _slug(text: str) -> str:
 
 
 def _backend(args: argparse.Namespace):
-    if args.backend == "claude":
-        return ClaudeCLI(model=args.model)
-    if not args.cmd:
-        raise SystemExit("--backend cmd needs --cmd, e.g. --cmd \"mytool --stdin\"")
-    return CommandBackend(shlex.split(args.cmd))
+    try:
+        return make_backend(args.backend, model=args.model, cmd=args.cmd)
+    except ValueError as error:
+        raise SystemExit(str(error))
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -135,7 +134,8 @@ def _notes(args: argparse.Namespace) -> int:
 
 
 def _add_backend_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--backend", choices=("claude", "cmd"), default="claude")
+    p.add_argument("--backend", choices=("claude", "cmd", *named_commands()), default="claude",
+                   help="claude, cmd (with --cmd), or a named CLI: built-in presets and podclip-backends.json")
     p.add_argument("--model", help="model name passed to the claude CLI")
     p.add_argument("--cmd", help="for --backend cmd: command that reads the prompt on stdin and prints JSON")
 
