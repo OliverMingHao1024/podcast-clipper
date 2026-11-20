@@ -7,62 +7,98 @@ PAGE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Podcast 剪輯工具</title>
 <style>
-:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2230;--mute:#667085;--line:#e1e5ec;--accent:#3b6fe0;--accent-ink:#fff;--ok:#1a7f4b;--bad:#c0392b;--warn:#b26a00}
-@media (prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2030;--ink:#e8ebf3;--mute:#98a2b8;--line:#2c3348;--accent:#6aa9ff;--accent-ink:#0b1020;--ok:#4cc38a;--bad:#ff7b6b;--warn:#f0b35a}}
+/* Bento design tokens (typeui.sh "bento" skill, MIT): primary #FAD4C0, secondary #80A1C1, surface #FFF5E6, text #111827,
+   spacing 4/8/12/16/24/32, radii 4/8 for controls (tiles use 16). Text on tinted fills always uses --ink. */
+:root{--surface:#FFF5E6;--card:#FFFFFF;--ink:#111827;--mute:#4B5563;--line:#EADCC8;--primary:#FAD4C0;--secondary:#80A1C1;--link:#2F5780;
+--ok:#15803D;--warn:#B45309;--bad:#B91C1C;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--r-ctl:8px;--r-tile:16px;
+--hero:color-mix(in srgb,var(--primary) 70%,var(--card));--font:Inter,system-ui,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;--mono:"JetBrains Mono",ui-monospace,"SF Mono",Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{--surface:#17130F;--card:#211C17;--ink:#F6EFE6;--mute:#B5AA9B;--line:#383028;--link:#9DBBDA;--hero:color-mix(in srgb,var(--primary) 14%,var(--card));--ok:#4ADE80;--warn:#FBBF24;--bad:#F87171}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif}
-main{max-width:760px;margin:0 auto;padding:24px 16px 64px}
-h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:0 0 12px}
-.sub{color:var(--mute);margin:0 0 20px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin:0 0 16px}
-.card[hidden]{display:none}
-.drop{border:2px dashed var(--line);border-radius:10px;padding:28px;text-align:center;color:var(--mute);cursor:pointer}
-.drop.over{border-color:var(--accent);color:var(--ink)}
-.modes{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+[hidden]{display:none!important}
+body{margin:0;background:var(--surface);color:var(--ink);font:16px/1.6 var(--font)}
+main{max-width:1040px;margin:0 auto;padding:var(--s5) var(--s4) 64px}
+h1{font-size:32px;line-height:1.2;margin:0 0 var(--s1)}h2{font-size:20px;line-height:1.3;margin:0 0 var(--s3)}
+.sub{color:var(--mute);font-size:14px;margin:0}
+.label{font:12px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--mute);margin:0 0 var(--s2)}
+.bento{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:var(--s4)}
+.bento>*{grid-column:span 12}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-tile);padding:var(--s5)}
+.bento>.span7{grid-column:span 7}.bento>.span5{grid-column:span 5}
+@media (max-width:760px){.bento>.span7,.bento>.span5{grid-column:span 12}}
+.hero{display:flex;gap:var(--s4);align-items:center;background:linear-gradient(135deg,var(--hero),var(--card) 85%)}
+.hero svg{width:72px;height:72px;flex:none;filter:drop-shadow(0 4px 8px rgba(17,24,39,.2))}
+.steps{margin:0;padding-left:var(--s5);color:var(--mute);font-size:14px}.steps li{margin:var(--s2) 0}.steps b{color:var(--ink)}
+.drop{border:2px dashed var(--secondary);border-radius:var(--r-tile);padding:var(--s6) var(--s4);text-align:center;color:var(--mute);cursor:pointer;background:color-mix(in srgb,var(--secondary) 10%,var(--card))}
+.drop:hover,.drop.over{border-color:var(--ink);color:var(--ink)}
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4);margin-bottom:var(--s4)}
 @media (max-width:560px){.modes{grid-template-columns:1fr}}
-.mode{border:2px solid var(--line);border-radius:10px;padding:12px 14px;cursor:pointer;display:block}
-.mode input{margin-right:6px}.mode b{display:block}.mode span{color:var(--mute);font-size:14px}
-.mode:has(input:checked){border-color:var(--accent)}
-label.row{display:flex;gap:10px;align-items:center;margin:8px 0;flex-wrap:wrap}
+.mode{border:2px solid var(--line);border-radius:var(--r-tile);padding:var(--s4) var(--s5);cursor:pointer;display:block;background:var(--card)}
+.mode input{margin-right:var(--s2)}.mode b{font-size:20px}.mode span{display:block;color:var(--mute);font-size:14px;margin-top:var(--s1)}
+.mode:has(input:checked){border-color:var(--ink);background:color-mix(in srgb,var(--primary) 45%,var(--card))}
+.mode:has(input:checked) span{color:var(--ink)}
+label.row{display:flex;gap:var(--s3);align-items:center;margin:var(--s2) 0;flex-wrap:wrap}
 label.row>span{min-width:9em;color:var(--mute);font-size:14px}
-select,input[type=number]{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
-button{font:inherit;border:0;border-radius:8px;padding:10px 18px;cursor:pointer;background:var(--accent);color:var(--accent-ink);font-weight:600}
-button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);font-weight:400}
+select,input[type=number]{font:inherit;padding:6px var(--s2);border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--card);color:var(--ink)}
+input[type=checkbox],input[type=radio]{accent-color:var(--link)}
+button{font:inherit;border:1px solid var(--ink);border-radius:var(--r-ctl);padding:10px var(--s5);cursor:pointer;background:var(--primary);color:#111827;font-weight:600}
+button:hover:not(:disabled){background:color-mix(in srgb,var(--primary) 82%,#000)}
+button.ghost{background:transparent;color:var(--ink);border-color:var(--line);font-weight:400}
+button.ghost:hover:not(:disabled){background:color-mix(in srgb,var(--primary) 30%,transparent)}
 button:disabled{opacity:.5;cursor:not-allowed}
-.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:10px}
-.bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+:is(button,select,input,summary,.drop,.mode):focus-visible{outline:3px solid var(--link);outline-offset:2px}
+.bar{height:8px;background:var(--line);border-radius:var(--r-ctl);overflow:hidden;margin-top:var(--s3)}
+.bar>i{display:block;height:100%;width:0;background:var(--secondary);transition:width .2s}
 .bar.busy>i{width:40%;animation:slide 1.2s infinite ease-in-out}
 @keyframes slide{0%{margin-left:-40%}100%{margin-left:100%}}
-@media (prefers-reduced-motion:reduce){.bar.busy>i{animation:none;width:100%;opacity:.5}}
-.note{padding:10px 12px;border-radius:8px;border:1px solid var(--line);margin:0 0 12px;font-size:14px}
-.note.warn{border-color:var(--warn);color:var(--warn)}.note.bad{border-color:var(--bad);color:var(--bad)}.note.ok{border-color:var(--ok);color:var(--ok)}
-pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:240px;overflow:auto;font-size:13px;white-space:pre-wrap;word-break:break-all}
+@media (prefers-reduced-motion:reduce){.bar.busy>i{animation:none;width:100%;opacity:.5}.bar>i{transition:none}}
+.note{padding:var(--s3);border-radius:var(--r-ctl);border:1px solid var(--line);margin-top:var(--s3);font-size:14px;background:var(--card)}
+.note.warn{border-color:var(--warn);color:var(--warn)}.note.bad{border-color:var(--bad);color:var(--bad)}
+pre{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-ctl);padding:var(--s3);max-height:240px;overflow:auto;font:13px/1.5 var(--mono);white-space:pre-wrap;word-break:break-all}
 table{width:100%;border-collapse:collapse;font-size:14px}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-td.mute{color:var(--mute)}
-.files a{display:block;padding:6px 0;color:var(--accent);word-break:break-all}
-.actions{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
-.outline{list-style:none;margin:0 0 16px;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;max-height:260px;overflow:auto;font-size:14px}
-.outline li{display:flex;gap:12px;padding:2px 0}.outline time{font-variant-numeric:tabular-nums;color:var(--accent);min-width:4.5em}
-details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:14px}
+th,td{text-align:left;padding:var(--s2);border-bottom:1px solid var(--line);vertical-align:top}
+th{font:12px/1 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--mute)}
+td.mute{color:var(--mute);font-family:var(--mono);font-size:13px}
+.files a{display:block;padding:var(--s2) 0;color:var(--link);word-break:break-all;text-decoration-thickness:1px;text-underline-offset:3px}
+.actions{display:flex;gap:var(--s3);margin-top:var(--s4);flex-wrap:wrap;align-items:center}
+.outline{list-style:none;margin:0;padding:var(--s3);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-ctl);max-height:420px;overflow:auto;font-size:14px}
+.outline li{display:flex;gap:var(--s3);padding:var(--s1) 0}.outline time{font:13px var(--mono);color:var(--link);min-width:4.5em}
+.noOutline>#cuts{grid-column:span 12}
+details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:14px}
 </style>
 </head>
 <body>
-<main>
-<h1>Podcast 剪輯工具</h1>
-<p class="sub">全程在你自己的電腦上執行，音檔不會上傳到任何地方（AI 建議只透過你本機已登入的 AI 命令列工具（如 Claude、Codex）取得）。</p>
+<main class="bento">
+<header class="card hero">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="podcast-clipper"> <title>podcast-clipper</title> <defs> <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"> <stop offset="0" stop-color="#FFF8EE"/> <stop offset="1" stop-color="#FAD4C0"/> </linearGradient> </defs> <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#lg)"/> <rect x="65" y="65" width="894" height="894" rx="203" fill="none" stroke="#111827" stroke-opacity=".1" stroke-width="2"/> <path d="M800 190 Q808.28 227.72 846 236 Q808.28 244.28 800 282 Q791.72 244.28 754 236 Q791.72 227.72 800 190Z" fill="#FFFFFF" stroke="#111827" stroke-width="10" stroke-linejoin="round"/> <path d="M236 300 Q241.4 324.6 266 330 Q241.4 335.4 236 360 Q230.6 335.4 206 330 Q230.6 324.6 236 300Z" fill="#FFFFFF" stroke="#111827" stroke-width="10" stroke-linejoin="round"/> <g fill="none" stroke="#111827" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"> <path d="M270 470 V520 A242 242 0 0 0 754 520 V470"/> <path d="M512 762 V826"/> </g> <rect x="396" y="818" width="232" height="52" rx="26" fill="#111827"/> <rect x="322" y="170" width="380" height="420" rx="190" fill="#80A1C1" stroke="#111827" stroke-width="22"/> <ellipse cx="408" cy="262" rx="40" ry="62" fill="#FFFFFF" fill-opacity=".28" transform="rotate(-18 408 262)"/> <ellipse cx="452" cy="366" rx="22" ry="30" fill="#111827"/> <ellipse cx="572" cy="366" rx="22" ry="30" fill="#111827"/> <circle cx="459" cy="355" r="8" fill="#FFFFFF"/> <circle cx="579" cy="355" r="8" fill="#FFFFFF"/> <ellipse cx="398" cy="430" rx="40" ry="24" fill="#F4A58A" fill-opacity=".85"/> <ellipse cx="626" cy="430" rx="40" ry="24" fill="#F4A58A" fill-opacity=".85"/> <path d="M482 424 Q512 458 542 424" fill="none" stroke="#111827" stroke-width="14" stroke-linecap="round"/> </svg>
+  <div>
+    <h1>Podcast 剪輯工具</h1>
+    <p class="sub">全程在你自己的電腦上執行，音檔不會上傳到任何地方（AI 建議只透過你本機已登入的 AI 命令列工具取得）。</p>
+  </div>
+</header>
 <div id="envnote"></div>
 
-<section class="card" id="s1">
-  <h2>① 選音檔</h2>
-  <div class="drop" id="drop">把音檔拖到這裡，或點一下選擇<br><small>mp3 / m4a / wav / flac / ogg / mp4 等</small></div>
+<section class="card span7" id="s1">
+  <p class="label">步驟 1</p>
+  <h2>選音檔</h2>
+  <div class="drop" id="drop" tabindex="0" role="button">把音檔拖到這裡，或點一下選擇<br><small>mp3 / m4a / wav / flac / ogg / mp4 等</small></div>
   <input type="file" id="file" hidden accept="audio/*,video/mp4,video/webm,video/x-matroska,.mp3,.m4a,.wav,.flac,.ogg,.aac,.opus,.mp4,.mkv,.webm">
   <div class="bar" id="upbar" hidden><i></i></div>
-  <p id="upmsg" class="sub" style="margin:8px 0 0"></p>
+  <p id="upmsg" class="sub" style="margin-top:8px" aria-live="polite"></p>
 </section>
 
+<aside class="card span5">
+  <p class="label">流程</p>
+  <h2>三步完成</h2>
+  <ol class="steps">
+    <li><b>選音檔</b>：拖進來就好。</li>
+    <li><b>選要做什麼</b>：挑精彩片段，或整集剪輯。</li>
+    <li><b>確認並下載</b>：整集剪輯會先給你勾選要剪的地方。</li>
+  </ol>
+</aside>
+
 <section class="card" id="s2" hidden>
-  <h2>② 你想做什麼？</h2>
+  <p class="label">步驟 2</p>
+  <h2>你想做什麼？</h2>
   <div class="modes">
     <label class="mode"><input type="radio" name="mode" value="clips" checked><b>挑出精彩短片段</b><span>AI 找出約 1～3 分鐘、適合分享的段落，各自輸出音檔、字幕與影片。</span></label>
     <label class="mode"><input type="radio" name="mode" value="plan"><b>整集剪輯</b><span>去掉長沉默、嗯呃、講錯重來。先給你勾選確認，再輸出剪好的整集。</span></label>
@@ -90,40 +126,50 @@ details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:14px}
 <section class="card" id="s3" hidden>
   <h2 id="runtitle">處理中…</h2>
   <div class="bar busy" id="runbar"><i></i></div>
-  <p id="runmsg" class="sub" style="margin:8px 0 0"></p>
+  <p id="runmsg" class="sub" style="margin-top:8px" aria-live="polite"></p>
   <details><summary>詳細紀錄</summary><pre id="log"></pre></details>
   <div class="actions"><button class="ghost" id="cancel">取消</button></div>
 </section>
 
-<section class="card" id="s4" hidden>
-  <h2>③ 確認要剪掉的地方</h2>
-  <p class="sub" id="planinfo"></p>
-  <div id="outlinebox" hidden>
-    <h2 style="font-size:15px">段落大綱（原音檔時間）</h2>
+<div id="s4" class="bento" hidden>
+  <section class="card span5" id="outlinebox" hidden>
+    <p class="label">步驟 3</p>
+    <h2>段落大綱</h2>
+    <p class="sub" style="margin-bottom:12px">原音檔時間，每段一句話說明在講什麼。</p>
     <ul id="outline" class="outline"></ul>
-  </div>
-  <table><thead><tr><th>剪掉</th><th>時間</th><th>類型</th><th>說明／逐字稿</th></tr></thead><tbody id="planrows"></tbody></table>
-  <label class="row" id="silrow"><input type="checkbox" id="silall" checked> <span style="min-width:0;color:var(--ink)" id="sillabel"></span></label>
-  <div class="actions">
-    <select id="outfmt"><option value=".mp3">mp3</option><option value=".m4a">m4a</option><option value=".wav">wav</option></select>
-    <label><input type="checkbox" id="norm" checked> 統一音量</label>
-    <button id="render">套用並輸出整集</button>
-  </div>
-</section>
+  </section>
+  <section class="card span7" id="cuts">
+    <p class="label">步驟 3</p>
+    <h2>確認要剪掉的地方</h2>
+    <p class="sub" id="planinfo" style="margin-bottom:12px"></p>
+    <table><thead><tr><th>剪掉</th><th>時間</th><th>類型</th><th>說明／逐字稿</th></tr></thead><tbody id="planrows"></tbody></table>
+    <label class="row" id="silrow"><input type="checkbox" id="silall" checked> <span style="min-width:0;color:var(--ink)" id="sillabel"></span></label>
+    <div class="actions">
+      <select id="outfmt" aria-label="輸出格式"><option value=".mp3">mp3</option><option value=".m4a">m4a</option><option value=".wav">wav</option></select>
+      <label><input type="checkbox" id="norm" checked> 統一音量</label>
+      <button id="render">套用並輸出整集</button>
+    </div>
+  </section>
+</div>
 
-<section class="card" id="s5" hidden>
-  <h2 id="donetitle">完成</h2>
-  <div id="donenote"></div>
-  <div class="files" id="files"></div>
-  <div id="notesbox">
-    <div class="actions"><button class="ghost" id="notesbtn">產生本集介紹文案</button></div>
-    <p class="sub" id="notesmsg" style="margin:8px 0 0"></p>
+<div id="s5" class="bento" hidden>
+  <section class="card span7">
+    <p class="label">完成</p>
+    <h2 id="donetitle">完成</h2>
+    <div id="donenote"></div>
+    <div class="files" id="files"></div>
+    <p class="sub" id="where" style="margin-top:12px"></p>
+    <div class="actions"><button class="ghost" onclick="location.reload()">處理另一個檔案</button></div>
+  </section>
+  <section class="card span5" id="notesbox">
+    <p class="label">節目文案</p>
+    <h2>本集介紹</h2>
+    <div class="actions" style="margin-top:0"><button class="ghost" id="notesbtn">產生本集介紹文案</button></div>
+    <p class="sub" id="notesmsg" style="margin-top:8px" aria-live="polite"></p>
     <pre id="notestext" hidden></pre>
     <div class="actions"><button class="ghost" id="notescopy" hidden>複製文案</button></div>
-  </div>
-  <p class="sub" id="where"></p>
-  <div class="actions"><button class="ghost" onclick="location.reload()">處理另一個檔案</button></div>
-</section>
+  </section>
+</div>
 </main>
 <script>
 const T = "__TOKEN__";
@@ -156,6 +202,7 @@ api("/api/env").then(env => {
 
 const drop = $("#drop"), input = $("#file");
 drop.onclick = () => input.click();
+drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } };
 input.onchange = () => input.files[0] && sendFile(input.files[0]);
 drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
 drop.ondragleave = () => drop.classList.remove("over");
@@ -230,6 +277,7 @@ async function loadPlan() {
   const ol = $("#outline"); ol.replaceChildren();
   (p.outline || []).forEach(o => { const li = el("li"); li.appendChild(el("time", clock(o.start))); li.appendChild(el("span", o.topic)); ol.appendChild(li); });
   show("#outlinebox", (p.outline || []).length > 0);
+  $("#s4").classList.toggle("noOutline", !(p.outline || []).length);
   const tb = $("#planrows"); tb.replaceChildren();
   const quiet = planCuts.filter(c => c.kind === "silence" && c.end - c.start < 3);
   planCuts.forEach(c => {
@@ -270,7 +318,7 @@ $("#notesbtn").onclick = async () => {
 $("#notescopy").onclick = () => navigator.clipboard.writeText($("#notestext").textContent).then(() => { $("#notescopy").textContent = "已複製"; });
 
 function finish(d) {
-  notesFrom = jobId; $("#notestext").hidden = true; $("#notescopy").hidden = true; $("#notesmsg").textContent = "";
+  notesFrom = jobId; $("#notestext").hidden = true; $("#notescopy").hidden = true; $("#notesmsg").textContent = ""; $("#notescopy").textContent = "複製文案"; $("#notesbtn").disabled = false;
   show("#s3", false); show("#s5");
   $("#donetitle").textContent = d.kind === "render" ? "剪輯完成" : "片段完成";
   const box = $("#files"); box.replaceChildren();

@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/logo.svg" width="128" alt="podcast-clipper logo">
+
 # podcast-clipper
 
 **純音訊 Podcast 的 AI 剪輯助手：一集錄音，變成精華短片、剪好的整集與節目文案**
