@@ -16,10 +16,10 @@ podclip run episode.mp3 --backend cmd --cmd "mytool --stdin"
 
 ## For non-programmers: browser UI (local only)
 
-Clone the repo, then double-click `start.bat` (Windows). The first run creates `.venv` and installs
+Clone the repo, then double-click `start.bat` (Windows) or `start.command` (macOS; first time: right-click → Open, or `chmod +x start.command`; Linux: run it in a terminal). The first run creates `.venv` and installs
 the components from PyPI; after that it opens a page in your browser: pick an audio file, choose
 "clips" or "whole-episode edit", review the cuts with checkboxes, download the results. Needs Python 3.10+,
-`ffmpeg` on PATH, and (for AI suggestions) the `claude` CLI logged in. Same thing from a terminal:
+`ffmpeg` on PATH (macOS: `brew install ffmpeg`), and (for AI suggestions) the `claude` CLI logged in. Same thing from a terminal:
 `podclip web [--workdir podclip-work] [--port N] [--no-browser]`. Uploads and results live in `podclip-work/`.
 
 ## Edit a whole episode (not clips)

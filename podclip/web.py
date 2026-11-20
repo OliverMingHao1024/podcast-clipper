@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -174,7 +175,8 @@ def start_job(state: State, kind: str, o: dict) -> Job:
                "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_VERBOSITY": "error", "PYTHONWARNINGS": "ignore"}
         job.proc = subprocess.Popen([sys.executable, "-m", "podclip.cli", *argv], cwd=folder, env=env, text=True,
                                     encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                    start_new_session=sys.platform != "win32")  # own process group, so cancel reaches children
         state.jobs[job.id] = job
         threading.Thread(target=_pump, args=(job,), daemon=True).start()
         return job
@@ -186,7 +188,10 @@ def cancel_job(job: Job) -> None:
         if sys.platform == "win32":  # also stop ffmpeg / claude children
             subprocess.run(["taskkill", "/PID", str(job.proc.pid), "/T", "/F"], capture_output=True)
         else:
-            job.proc.terminate()
+            try:
+                os.killpg(job.proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
 
 def job_files(job: Job) -> list[dict]:

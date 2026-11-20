@@ -12,7 +12,7 @@ from .finder import Clip
 
 AUDIO_CODECS = {".mp3": ["-c:a", "libmp3lame", "-q:a", "2"], ".m4a": ["-c:a", "aac", "-b:a", "128k"],
                 ".wav": ["-c:a", "pcm_s16le"]}
-DEFAULT_FONT = "Microsoft JhengHei" if sys.platform == "win32" else "Noto Sans CJK TC"
+DEFAULT_FONT = {"win32": "Microsoft JhengHei", "darwin": "PingFang TC"}.get(sys.platform, "Noto Sans CJK TC")
 
 
 class RenderError(RuntimeError):
