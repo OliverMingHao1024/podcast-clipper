@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "podcast-clipper"
+version = "0.1.0"
+description = "Cut audio podcasts into short clips using an LLM reached through a local CLI (subscription) or any command."
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+asr = ["faster-whisper>=1.0"]
+gpu = ["faster-whisper>=1.0", "nvidia-cublas-cu12", "nvidia-cudnn-cu12"]
+dev = ["pytest"]
+
+[project.scripts]
+podclip = "podclip.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["podclip*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
