@@ -262,6 +262,41 @@ def _notes(args: argparse.Namespace) -> int:
     return 0
 
 
+def _voices(args: argparse.Namespace) -> int:
+    """List, forget, export, import or add remembered voices (the file stays on this computer)."""
+    from . import diarize, voices
+    if args.action == "list":
+        rows = voices.people()
+        print(*(f"{r['name']}  ({r['samples']} samples)" for r in rows) if rows else ["no remembered voices"], sep="\n")
+        return 0
+    if args.action == "forget":
+        if not voices.forget(args.value):
+            raise SystemExit(f"no remembered voice named {args.value!r}")
+        print(f"forgot {args.value}")
+        return 0
+    if args.action == "export":
+        Path(args.value).expanduser().write_text(voices.export_text(), encoding="utf-8")
+        print(f"exported {len(voices.people())} people to {args.value} (this file identifies people by voice: keep it private)")
+        return 0
+    if args.action == "import":
+        text = Path(args.value).expanduser().read_text(encoding="utf-8")
+        print(f"imported {voices.import_text(text)} people")
+        return 0
+    # enroll: podclip voices enroll AUDIO --srt FILE --as 講者1=小明 ...
+    if not args.srt or not args.alias:
+        raise SystemExit("enroll needs --srt and at least one --as LABEL=NAME")
+    mapping = {}
+    for item in args.alias:
+        label, sep, who = item.partition("=")
+        if not sep or not diarize.clean_name(who):
+            raise SystemExit(f"bad --as {item!r}; use LABEL=NAME, for example 講者1=小明")
+        mapping[label.strip()] = who
+    done = voices.remember(_supported_audio(args.value), srt.read(Path(args.srt).expanduser()), mapping)
+    for who, ok in done.items():
+        print(f"{who}: {'remembered' if ok else 'not enough speech to learn this voice'}")
+    return 0 if all(done.values()) else 1
+
+
 def _doctor(args: argparse.Namespace) -> int:
     from .doctor import run_checks
     marks = {"ok": "[OK]", "warn": "[!!]", "fail": "[XX]", "info": "[..]"}
@@ -330,6 +365,12 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--backend", choices=("claude", *named_commands()), default="claude", help="AI tool for --ai")
     c.add_argument("--workdir", default="podclip-work")
     c.add_argument("-v", "--verbose", action="store_true")
+    k = sub.add_parser("voices", help="remembered voices: list, forget, export, import, or enroll from a labelled episode")
+    k.add_argument("action", choices=("list", "forget", "export", "import", "enroll"))
+    k.add_argument("value", nargs="?", default="", help="forget: the name; export/import: a file; enroll: the audio file")
+    k.add_argument("--srt", help="enroll: the labelled subtitle file of that audio")
+    k.add_argument("--as", dest="alias", action="append", help="enroll: LABEL=NAME, e.g. 講者1=小明 (repeatable)")
+    k.add_argument("-v", "--verbose", action="store_true")
     v = sub.add_parser("videos", help="make the waveform videos of an earlier `run` (after the speaker names are final)")
     v.add_argument("out", help="the --out folder of the earlier run (contains clips.json)")
     v.add_argument("-v", "--verbose", action="store_true")
@@ -361,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
             return _more(args)
         if args.command == "videos":
             return _videos(args)
+        if args.command == "voices":
+            return _voices(args)
         if args.command == "doctor":
             return _doctor(args)
         if args.command == "edit-render":

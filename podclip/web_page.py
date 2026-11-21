@@ -78,7 +78,10 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
     <h1>Podcast 剪輯工具</h1>
     <p class="sub">全程在你自己的電腦上執行，音檔不會上傳到任何地方（AI 建議只透過你本機已登入的 AI 命令列工具取得）。</p>
   </div>
-  <button class="ghost mini" id="doctorbtn" style="margin-left:auto">環境自我檢查</button>
+  <span style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
+    <button class="ghost mini" id="voicebtn">已記住的聲音</button>
+    <button class="ghost mini" id="doctorbtn">環境自我檢查</button>
+  </span>
 </header>
 <div id="envnote"></div>
 <section class="card" id="sdoctor" hidden>
@@ -86,6 +89,14 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
   <div id="doctorrows"></div>
   <div class="actions"><button class="ghost" id="doctorredo">重新檢查</button><button class="ghost" id="doctorai">連 AI 一起測</button></div>
   <p class="sub" style="margin-top:8px">「連 AI 一起測」會送出一個很短的提問，確認 AI 工具已登入，會用掉極少量的用量。</p>
+</section>
+
+<section class="card" id="voicebox" hidden>
+  <h2>已記住的聲音</h2>
+  <p class="sub" style="margin-bottom:12px">下次辨識說話者時，聽起來像這些人的話會自動標上名字。存的是聲音特徵（無法還原成錄音），只放在這台電腦的 podclip-work/voices.json，不會上傳。聲音能認出一個人，匯出檔請只給自己保管，也只記住已同意的人。</p>
+  <div id="voicerows"></div>
+  <div class="actions"><button class="ghost" id="voiceexport">匯出</button><button class="ghost" id="voiceimportbtn">匯入</button>
+    <input type="file" id="voiceimport" hidden accept=".json,application/json"><span class="sub" id="voicemsg" aria-live="polite"></span></div>
 </section>
 
 <section class="card span7" id="s1">
@@ -207,6 +218,7 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
   <h2>誰是誰？填上名字</h2>
   <p class="sub" style="margin-bottom:12px">程式只能分出「不同的人」，不知道誰是誰，也可能分錯。對照每個人的幾句話，填上名字，會改寫字幕檔與之後輸出的文字稿；波形影片等你確定名字後再按「產生波形影片」才會做，名字才會燒進去。</p>
   <div id="spkrows"></div>
+  <label class="row"><input type="checkbox" id="remember" checked> 記住這些人的聲音，下次自動認出（只存在這台電腦；在上方「已記住的聲音」可刪除）</label>
   <div class="actions"><button id="spksave">套用名字</button><span class="sub" id="spkmsg" aria-live="polite"></span></div>
 </section>
 </main>
@@ -396,8 +408,15 @@ async function loadSpeakers(job) {
   $("#spksave").onclick = async () => {
     const names = {}; box.querySelectorAll("input").forEach(i => { if (i.value.trim()) names[i.dataset.label] = i.value.trim(); });
     if (!Object.keys(names).length) { $("#spkmsg").textContent = "先在上面填至少一個名字。"; return; }
-    try { const r = await post("/api/speakers/" + job, {names}); await loadSpeakers(job); $("#spkmsg").textContent = "已套用（改寫 " + r.changed + " 個字幕檔）。"; }
+    $("#spksave").disabled = true; $("#spkmsg").textContent = $("#remember").checked ? "正在套用並學習聲音，約需十幾秒…" : "";
+    try {
+      const r = await post("/api/speakers/" + job, {names, remember: $("#remember").checked});
+      await loadSpeakers(job);
+      $("#spkmsg").textContent = "已套用（改寫 " + r.changed + " 個字幕檔）。" + (r.remembered.length ? "已記住：" + r.remembered.join("、") + "。" : "") + (r.note ? " " + r.note : "");
+      loadVoices();
+    }
     catch (e) { $("#spkmsg").textContent = "失敗：" + e.message; }
+    $("#spksave").disabled = false;
   };
   show("#spkbox");
 }
@@ -434,6 +453,31 @@ async function loadPlan() {
   $("#silall").checked = quiet.every(c => c.apply);
   $("#silall").onchange = e => quiet.forEach(c => { c.apply = e.target.checked; });
 }
+
+async function loadVoices() {
+  const box = $("#voicerows"); box.replaceChildren();
+  let d; try { d = await api("/api/voices"); } catch (e) { box.appendChild(el("p", "讀取失敗：" + e.message, "note bad")); return; }
+  if (!d.voices.length) box.appendChild(el("p", "還沒有記住任何人。在「誰是誰？」填完名字並勾選「記住這些人的聲音」就會存下來。", "sub"));
+  d.voices.forEach(v => {
+    const row = el("div", null, "result"), b = el("button", "刪除", "ghost mini");
+    row.appendChild(el("span", v.name + "（" + v.samples + " 份樣本） "));
+    b.onclick = async () => { if (!confirm("確定刪除「" + v.name + "」的聲音？之後不會再自動認出這個人。")) return;
+      try { await post("/api/voices/forget", {name: v.name}); } catch (e) { alert(e.message); } loadVoices(); };
+    row.appendChild(b); box.appendChild(row);
+  });
+}
+$("#voicebtn").onclick = () => { const on = $("#voicebox").hidden; show("#voicebox", on); if (on) loadVoices(); };
+$("#voiceexport").onclick = () => { location.href = "/export/voices?t=" + encodeURIComponent(T); };
+$("#voiceimportbtn").onclick = () => $("#voiceimport").click();
+$("#voiceimport").onchange = async () => {
+  const f = $("#voiceimport").files[0]; if (!f) return; $("#voiceimport").value = "";
+  try {
+    const r = await fetch("/api/voices/import", {method: "PUT", headers: {"X-Token": T}, body: f});
+    const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || r.statusText);
+    $("#voicemsg").textContent = "已匯入 " + d.imported + " 人。";
+  } catch (e) { $("#voicemsg").textContent = "匯入失敗：" + e.message; }
+  loadVoices();
+};
 
 let earTimer = null;
 function stopListening() {

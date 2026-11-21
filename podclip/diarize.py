@@ -43,6 +43,13 @@ ISOLATED_SEC = 1.0  # a cue this short, between two cues of one other speaker, i
 MIN_EMBED_SEC = 0.6  # shorter cues give unreliable voice features
 OVERRIDE_MIN, OVERRIDE_MARGIN = 0.35, 0.3  # the new speaker must be at least this similar and this much closer
 CENTROID_CHUNK_SEC, MIN_CHUNKS, MAX_CHUNKS = 6.0, 4, 60
+# Remembered voices (voices.py). A cue is named when its voice is clearly one known person: at least KNOWN_MIN
+# similar (0.5 when only one person is known, since there is nobody to compare with) and KNOWN_MARGIN ahead of the
+# next known person. Cues that stay unsure keep their 講者N, unless almost every sure cue of their cluster agrees
+# on one person. Measured only on small hand-checked samples: 36/37 cues (leave-one-region-out on one episode) and
+# 24/24 confident turns on a second episode, so the numbers are conservative.
+KNOWN_MIN, KNOWN_MIN_ALONE, KNOWN_MARGIN = 0.40, 0.50, 0.15
+CLUSTER_SHARE, CLUSTER_MIN_CUES = 0.85, 8
 
 
 def available() -> bool:
@@ -164,16 +171,18 @@ def pick(cues: list[Cue], turns: list[tuple[float, float, int]]) -> list[int | N
     return picked
 
 
-def name(cues: list[Cue], picked: list[int | None]) -> list[Cue]:
-    """Name the picked speakers 講者1.. by order of first appearance."""
+def name(cues: list[Cue], picked: list) -> list[Cue]:
+    """Name speaker numbers 講者1.. by order of first appearance; a picked value that is already a name is kept."""
     names: dict[int, str] = {}
     out = []
     for c, who in zip(cues, picked):
         if who is None:
             out.append(Cue(c.start, c.end, c.text, ""))
-            continue
-        names.setdefault(who, f"{LABEL}{len(names) + 1}")
-        out.append(Cue(c.start, c.end, c.text, names[who]))
+        elif isinstance(who, str):
+            out.append(Cue(c.start, c.end, c.text, who))
+        else:
+            names.setdefault(who, f"{LABEL}{len(names) + 1}")
+            out.append(Cue(c.start, c.end, c.text, names[who]))
     return out
 
 
@@ -205,19 +214,41 @@ def centroids(samples, turns: list[tuple[float, float, int]], embed) -> dict:
     for start, end, who in turns:
         if end - start >= 1.0 and not any(min(end, e) - max(start, s) > 0 for s, e, w in turns if w != who):
             spans.setdefault(who, []).append((start, end))
-    size, out = int(CENTROID_CHUNK_SEC * 16000), {}
+    out = {}
     for who, parts in spans.items():
-        speech = np.concatenate([samples[int(a * 16000):int(b * 16000)] for a, b in parts])
-        chunks = [speech[i:i + size] for i in range(0, len(speech) - size + 1, size)]
-        if len(chunks) < MIN_CHUNKS:
-            continue
-        step = max(1, len(chunks) // MAX_CHUNKS)
-        mean = np.mean([embed(c) for c in chunks[::step]], axis=0)
-        out[who] = mean / np.linalg.norm(mean)
+        mean = _mean_voice(np.concatenate([samples[int(a * 16000):int(b * 16000)] for a, b in parts]), embed)
+        if mean is not None:
+            out[who] = mean
     return out
 
 
-def refine(cues: list[Cue], picked: list[int | None], turns, samples, embed) -> tuple[list[int | None], int]:
+def _mean_voice(speech, embed, min_chunks: int = MIN_CHUNKS):
+    """Average voice vector of some seconds of speech (6 s pieces, at most 60 of them), None when there is too little."""
+    import numpy as np
+    size = int(CENTROID_CHUNK_SEC * 16000)
+    chunks = [speech[i:i + size] for i in range(0, len(speech) - size + 1, size)]
+    if len(chunks) < min_chunks:
+        return None
+    mean = np.mean([embed(c) for c in chunks[::max(1, len(chunks) // MAX_CHUNKS)]], axis=0)
+    return mean / np.linalg.norm(mean)
+
+
+def voice_sample(samples, cues: list[Cue], who: str, embed):
+    """A voice vector for the speaker labelled `who`, from their own cues of at least 1 s (None if under ~18 s)."""
+    import numpy as np
+    spans = [(c.start, c.end) for c in cues if c.speaker == who and c.end - c.start >= 1.0]
+    if not spans:
+        return None
+    return _mean_voice(np.concatenate([samples[int(a * 16000):int(b * 16000)] for a, b in spans]), embed, min_chunks=3)
+
+
+def cue_vectors(cues: list[Cue], samples, embed) -> list:
+    """One voice vector per cue (None for cues shorter than MIN_EMBED_SEC)."""
+    return [embed(samples[int(c.start * 16000):int(c.end * 16000)]) if c.end - c.start >= MIN_EMBED_SEC else None
+            for c in cues]
+
+
+def refine(cues: list[Cue], picked: list[int | None], turns, samples, embed, vectors=None) -> tuple[list[int | None], int]:
     """Change a cue's speaker when its own audio is clearly closer to another speaker's voice. Returns (picked, changes)."""
     known = centroids(samples, turns, embed)
     if len(known) < 2:
@@ -227,7 +258,7 @@ def refine(cues: list[Cue], picked: list[int | None], turns, samples, embed) -> 
         current = picked[i]
         if current not in known or c.end - c.start < MIN_EMBED_SEC:
             continue
-        voice = embed(samples[int(c.start * 16000):int(c.end * 16000)])
+        voice = vectors[i] if vectors is not None else embed(samples[int(c.start * 16000):int(c.end * 16000)])
         sims = {who: float(voice @ vec) for who, vec in known.items()}
         best = max(sims, key=sims.get)
         if best != current and sims[best] >= OVERRIDE_MIN and sims[best] - sims[current] >= OVERRIDE_MARGIN:
@@ -235,13 +266,46 @@ def refine(cues: list[Cue], picked: list[int | None], turns, samples, embed) -> 
     return out, changed
 
 
-def label_cues(audio: Path, cues: list[Cue], speakers: int) -> list[Cue]:
+def match_known(picked: list, vectors: list, known: dict) -> tuple[list, int]:
+    """Name cues whose voice is clearly one remembered person. Returns (picked, number of cues named)."""
+    if not known:
+        return picked, 0
+    names, need = list(known), (KNOWN_MIN if len(known) > 1 else KNOWN_MIN_ALONE)
+    out, named = list(picked), 0
+    for i, vec in enumerate(vectors):
+        if vec is None:
+            continue
+        sims = sorted(((float(vec @ known[n]), n) for n in names), reverse=True)
+        second = sims[1][0] if len(sims) > 1 else -1.0
+        if sims[0][0] >= need and sims[0][0] - second >= KNOWN_MARGIN:
+            out[i], named = sims[0][1], named + 1
+    for who in {p for p in picked if isinstance(p, int)}:  # a cluster whose sure cues agree: name its unsure cues too
+        sure = [out[i] for i, p in enumerate(picked) if p == who and isinstance(out[i], str)]
+        if len(sure) >= CLUSTER_MIN_CUES:
+            top = max(set(sure), key=sure.count)
+            if sure.count(top) / len(sure) >= CLUSTER_SHARE:
+                for i, p in enumerate(picked):
+                    if p == who and not isinstance(out[i], str):
+                        out[i], named = top, named + 1
+    return out, named
+
+
+def label_cues(audio: Path, cues: list[Cue], speakers: int, known: dict | None = None) -> list[Cue]:
+    """Speaker labels for cues: turns, a voice check, then remembered voices (known; the voices file when None)."""
     samples = _samples(audio)
     turns = turns_for(audio, speakers, samples)
     picked = pick(cues, turns)
     try:
-        picked, changed = refine(cues, picked, turns, samples, _embedder())
+        embed = _embedder()
+        vectors = cue_vectors(cues, samples, embed)
+        picked, changed = refine(cues, picked, turns, samples, embed, vectors)
         print(f"voice check: {changed} short lines moved to a closer voice", file=sys.stderr, flush=True)
+        if known is None:
+            from . import voices
+            known = voices.known()
+        picked, named = match_known(picked, vectors, known)
+        if known:
+            print(f"remembered voices: {len(known)} known, {named} lines named", file=sys.stderr, flush=True)
     except Exception as error:  # noqa: BLE001 - this second look is optional; keep the turn-based labels
         print(f"warning: voice check skipped: {error}", file=sys.stderr)
     return name(cues, picked)

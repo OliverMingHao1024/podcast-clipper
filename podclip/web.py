@@ -30,6 +30,8 @@ from importlib.util import find_spec
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from . import diarize as diarize_mod
+from . import voices as voices_mod
 from .cli import AUDIO_EXT
 from .llm import backend_status
 from .render import ASPECTS
@@ -253,6 +255,7 @@ def start_job(state: State, kind: str, o: dict) -> Job:
         env ={**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
                "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_VERBOSITY": "error", "PYTHONWARNINGS": "ignore",
                "PODCLIP_STATS": str(state.workdir / "speed.json"), "PODCLIP_MODELS": str(state.workdir / "models"),
+               "PODCLIP_VOICES": str(state.workdir / "voices.json"),
                "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).resolve().parent.parent),
                                                            os.environ.get("PYTHONPATH", "")]))}
         job.proc = subprocess.Popen([sys.executable, "-m", "podclip.cli", *argv], cwd=folder, env=env, text=True,
@@ -354,13 +357,26 @@ def read_speakers(job: Job) -> list[dict]:
         return []
 
 
-def rename_speakers(job: Job, names: object) -> int:
-    """Apply {old label: new name} to every subtitle file of the job; returns how many files changed."""
-    from . import diarize, srt
+def rename_speakers(job: Job, names: object, remember: bool = False, voices_file: Path | None = None) -> dict:
+    """Apply {old label: new name} to every subtitle file of the job. With remember, also store each named speaker's
+    voice (from this job's audio) so the next episode can recognise them. Returns {changed, remembered, note}."""
+    from . import diarize, srt, voices
     if not isinstance(names, dict) or not 0 < len(names) <= 20 or not all(isinstance(v, str) for v in names.values()):
         raise ApiError(400, "names must map each speaker to a new name")
     if not any(diarize.clean_name(v) for v in names.values()):
         raise ApiError(400, "type at least one usable name (1-20 characters, without 【 or 】)")
+    remembered, note = {}, ""
+    top = sorted((job.folder / "out").glob("*.srt"))
+    if remember:  # a failure here must not lose the rename itself
+        try:
+            if not top or job.source is None or not job.source.is_file():
+                raise RuntimeError("the original audio is no longer available")
+            remembered = voices.remember(job.source, srt.read(top[0]),
+                                         {old: new for old, new in names.items() if diarize.clean_name(new)}, voices_file)
+        except (RuntimeError, ValueError, OSError) as error:
+            note = f"名字已改，但沒能記住聲音：{error}"
+        if not note and not all(remembered.values()):
+            note = "有人的發言太少（不到約 18 秒），沒能記住：" + "、".join(n for n, ok in remembered.items() if not ok)
     changed = 0
     for path in _srt_files(job):
         try:
@@ -371,7 +387,7 @@ def rename_speakers(job: Job, names: object) -> int:
         if renamed != cues:
             srt.write(path, renamed)
             changed += 1
-    return changed
+    return {"changed": changed, "remembered": sorted(n for n, ok in remembered.items() if ok), "note": note}
 
 
 def environment() -> dict:
@@ -461,6 +477,10 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and parts[0] == "zip" and len(parts) == 2:
                 self._check_token((query.get("t") or [None])[0])
                 return self._zip(parts[1])
+            if method == "GET" and parts == ["export", "voices"]:
+                self._check_token((query.get("t") or [None])[0])
+                body = voices_mod.export_text(self.state.workdir / "voices.json").encode("utf-8")
+                return self._send(200, body, "application/json", {"Content-Disposition": "attachment; filename=podclip-voices.json"})
             if method == "GET" and parts[0] == "source" and len(parts) == 2:
                 self._check_token((query.get("t") or [None])[0])
                 return self._source(parts[1])
@@ -492,6 +512,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"checks": run_checks(st.workdir, ai=ai, backend=backend)})
         if route == ("POST", "estimate"):
             return self._json(self._estimate(self._body()))
+        if route == ("GET", "voices"):
+            return self._json({"voices": voices_mod.people(st.workdir / "voices.json"), "available": diarize_mod.available()})
+        if method == "POST" and parts == ["voices", "forget"]:
+            name = self._body().get("name")
+            if not isinstance(name, str) or not voices_mod.forget(name, st.workdir / "voices.json"):
+                raise ApiError(404, "no such remembered voice")
+            return self._json({"voices": voices_mod.people(st.workdir / "voices.json")})
+        if method == "PUT" and parts == ["voices", "import"]:
+            return self._voices_import()
         if route == ("PUT", "subtitles"):
             return self._subtitles((query.get("for") or [""])[0])
         if route == ("PUT", "upload"):
@@ -526,8 +555,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == ("GET", "speakers"):
                 return self._json({"speakers": read_speakers(job)})
             if route == ("POST", "speakers"):
-                changed = rename_speakers(job, self._body().get("names"))
-                return self._json({"changed": changed, "speakers": read_speakers(job)})
+                body = self._body()
+                result = rename_speakers(job, body.get("names"), bool(body.get("remember")), st.workdir / "voices.json")
+                return self._json({**result, "speakers": read_speakers(job)})
         raise ApiError(404, "not found")
 
     def _upload(self, name: str) -> None:
@@ -574,6 +604,20 @@ class Handler(BaseHTTPRequestHandler):
                           use_ai=not o.get("no_ai"), stats_path=self.state.workdir / "speed.json",
                           speakers=bool(_speakers_arg(o)))
         return {"estimate": result, "duration": duration}
+
+    def _voices_import(self) -> None:
+        """Merge a voice file exported from this tool; only people with well-formed vectors are taken."""
+        self._body_read = True
+        length = int(self.headers.get("Content-Length") or 0)
+        if not 0 < length <= voices_mod.MAX_BYTES:
+            self.close_connection = True
+            raise ApiError(413, "voice file is empty or too large")
+        raw = self.rfile.read(length).decode("utf-8-sig", errors="replace")
+        try:
+            count = voices_mod.import_text(raw, self.state.workdir / "voices.json")
+        except ValueError as error:
+            raise ApiError(400, str(error)) from error
+        self._json({"imported": count, "voices": voices_mod.people(self.state.workdir / "voices.json")})
 
     def _subtitles(self, upload_id: str) -> None:
         """Attach a subtitle file to an upload so the run can skip speech recognition."""
