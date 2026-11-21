@@ -110,8 +110,11 @@ def test_cli_end_to_end_with_fake_command(tmp_path):
     assert code == 0
     folder = next(p for p in out.iterdir() if p.is_dir())
     assert "/" not in folder.name and "?" not in folder.name
-    for name in ("clip.mp3", "clip.srt", "clip.mp4", "post.txt"):
+    for name in ("clip.mp3", "clip.srt", "post.txt"):
         assert (folder / name).stat().st_size > 0, name
+    assert not (folder / "clip.mp4").exists()  # videos are made on request, after the speaker names are final
+    assert main(["videos", str(out)]) == 0
+    assert (folder / "clip.mp4").stat().st_size > 0
     assert json.loads((out / "clips.json").read_text(encoding="utf-8"))["clips"][0]["start_row"] == 10
 
 
@@ -178,6 +181,8 @@ def test_video_follows_the_chosen_aspect(tmp_path, aspect, size):
     out = tmp_path / "out"
     assert main(["run", str(audio), "--srt", str(tmp_path / "ep.srt"), "--out", str(out), "--backend", "cmd",
                  "--cmd", f'python "{reply}"', "--min-sec", "30", "--max-sec", "90", "--aspect", aspect]) == 0
+    assert not list(out.glob("*/clip.mp4"))
+    assert main(["videos", str(out)]) == 0
     video = next(out.glob("*/clip.mp4"))
     probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
                             "-of", "csv=p=0", str(video)], capture_output=True, text=True, check=True).stdout.strip()

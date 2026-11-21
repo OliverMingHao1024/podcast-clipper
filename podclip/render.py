@@ -48,9 +48,9 @@ def clip_cues(cues: list[srt.Cue], clip: Clip) -> list[srt.Cue]:
             for c in cues[clip.start_row:clip.end_row + 1]]
 
 
-def write_srt(cues: list[srt.Cue], clip: Clip, out: Path, *, labels: bool = True) -> Path:
+def write_srt(cues: list[srt.Cue], clip: Clip, out: Path) -> Path:
     target = out.with_suffix(".srt")
-    srt.write(target, clip_cues(cues, clip), offset=clip.start, labels=labels)
+    srt.write(target, clip_cues(cues, clip), offset=clip.start)
     return target
 
 

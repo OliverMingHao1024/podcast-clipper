@@ -368,5 +368,22 @@ def test_estimate_counts_speaker_labelling(server, monkeypatch):
     assert call(server, "POST", "/api/estimate", {"kind": "clips", "upload_id": up, "options": {"speakers": 99}})[0] == 400
 
 
+def test_videos_are_a_separate_step_that_needs_a_finished_clips_run(server, tmp_path):
+    assert web.build_argv("videos", {}, None, tmp_path)[0] == "videos"
+    folder = tmp_path / "job"
+    (folder / "out").mkdir(parents=True)
+    parent = web.Job("clips", folder)
+    parent.status = "done"
+    server.state.jobs[parent.id] = parent
+    assert web.wants_video(parent) is None  # no clips.json yet
+    assert call(server, "POST", "/api/start", {"kind": "videos", "plan_job": parent.id})[0] == 400
+    (folder / "out" / "clips.json").write_text(json.dumps({"options": {"formats": ["audio", "srt", "video"]}, "clips": [], "alternates": []}), encoding="utf-8")
+    assert web.wants_video(parent) is True
+    status, body = call(server, "GET", f"/api/job/{parent.id}")
+    assert status == 200 and json.loads(body)["video"] is True
+    (folder / "out" / "clips.json").write_text(json.dumps({"options": {"formats": ["audio"]}, "clips": [], "alternates": []}), encoding="utf-8")
+    assert web.wants_video(parent) is False
+
+
 def test_env_reports_whether_speaker_labels_are_installed(server):
     assert "speakers" in json.loads(call(server, "GET", "/api/env")[1])

@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import tarfile
+from dataclasses import replace
 
 import pytest
 
@@ -155,7 +156,7 @@ def test_speakers_need_the_optional_package(monkeypatch, tmp_path):
 
 
 @needs_ffmpeg
-def test_run_writes_labelled_subtitles_but_the_video_burns_plain_text(tmp_path, monkeypatch):
+def test_run_labels_subtitles_and_the_video_comes_later_with_the_names_burned_in(tmp_path, monkeypatch):
     audio = tmp_path / "ep.mp3"
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=400",
                     str(audio)], check=True)
@@ -175,8 +176,11 @@ def test_run_writes_labelled_subtitles_but_the_video_burns_plain_text(tmp_path, 
     assert manifest["srt_path"] == str(out / "ep.srt")
     folder = next(p for p in out.iterdir() if p.is_dir())
     assert "【講者" in (folder / "clip.srt").read_text(encoding="utf-8")
-    plain = (folder / ".video.srt").read_text(encoding="utf-8")
-    assert "【" not in plain and "內容" in plain
+    assert not (folder / "clip.mp4").exists() and not (folder / ".video.srt").exists()  # nothing is burned in yet
+    srt.write(folder / "clip.srt", [replace(c, speaker="小明") for c in srt.read(folder / "clip.srt")])  # the user renamed
+    assert main(["videos", str(out)]) == 0
+    burned = (folder / ".video.srt").read_text(encoding="utf-8")
+    assert "【" not in burned and "小明：第" in burned
     assert (folder / "clip.mp4").stat().st_size > 0
 
 
@@ -186,3 +190,62 @@ def test_a_labelling_failure_keeps_the_transcript(tmp_path, monkeypatch, capsys)
     c = [Cue(0, 1, "a")]
     out, ok = _label_speakers(tmp_path / "a.mp3", c, 2)
     assert out == c and ok is False and "speaker labels skipped" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ voice check ---
+
+def _fake_world(np):
+    """Two 'voices': samples of +0.5 (speaker 0) and -0.5 (speaker 1). embed() turns the sign into a unit vector."""
+    sr = 16000
+    samples = np.concatenate([np.full(40 * sr, 0.5), np.full(40 * sr, -0.5), np.full(4 * sr, 0.5), np.full(4 * sr, -0.5)]).astype(np.float32)
+
+    def embed(a):
+        return np.array([1.0, 0.0] if a.mean() > 0 else [0.0, 1.0], dtype=np.float32)
+    turns = [(0, 40, 0), (40, 80, 1), (80, 84, 1), (84, 88, 1)]  # the turns call the last 8 s speaker 1, wrongly for 80-84
+    return samples, turns, embed
+
+
+def test_voice_check_moves_a_cue_whose_audio_matches_another_speaker():
+    np = pytest.importorskip("numpy")
+    samples, turns, embed = _fake_world(np)
+    c = [Cue(10, 12, "甲說的"), Cue(50, 52, "乙說的"), Cue(80, 82, "其實是甲")]
+    picked = diarize.pick(c, turns)
+    assert picked == [0, 1, 1]
+    fixed, changed = diarize.refine(c, picked, turns, samples, embed)
+    assert fixed == [0, 1, 0] and changed == 1
+
+
+def test_voice_check_ignores_very_short_cues_and_leaves_unknown_speakers_alone():
+    np = pytest.importorskip("numpy")
+    samples, turns, embed = _fake_world(np)
+    short = [Cue(80, 80.4, "嗯")]
+    assert diarize.refine(short, [1], turns, samples, embed) == ([1], 0)
+    assert diarize.refine([Cue(80, 82, "x")], [None], turns, samples, embed) == ([None], 0)
+    assert diarize.refine([Cue(80, 82, "x")], [7], turns, samples, embed) == ([7], 0)  # no voice known for speaker 7
+
+
+def test_voice_check_needs_two_voices_with_enough_clean_speech():
+    np = pytest.importorskip("numpy")
+    samples, _turns, embed = _fake_world(np)
+    one_voice = [(0, 40, 0), (40, 41, 1)]  # speaker 1 has only 1 s alone: no average voice for it
+    assert diarize.refine([Cue(50, 52, "x")], [1], one_voice, samples, embed) == ([1], 0)
+
+
+def test_voice_check_keeps_a_close_call():
+    np = pytest.importorskip("numpy")
+    samples, turns, _ = _fake_world(np)
+    blurry = lambda a: np.array([0.7, 0.6], dtype=np.float32) / np.linalg.norm([0.7, 0.6])  # equally close to both centroids
+    known = diarize.centroids(samples, turns, lambda a: np.array([1.0, 0.0], dtype=np.float32) if a.mean() > 0 else np.array([0.0, 1.0], dtype=np.float32))
+    assert set(known) == {0, 1}
+    c = [Cue(80, 82, "x")]
+    real = lambda a: np.array([1.0, 0.0], dtype=np.float32) if a.mean() > 0 else np.array([0.0, 1.0], dtype=np.float32)
+    # a vague voice cannot beat the margin even though it is not exactly the assigned speaker's
+    assert diarize.refine(c, [0], turns, samples, lambda a: blurry(a) if len(a) == 32000 else real(a))[1] == 0
+
+
+def test_a_failing_voice_check_keeps_the_turn_labels(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(diarize, "_samples", lambda _a: [0.0] * 10)
+    monkeypatch.setattr(diarize, "turns_for", lambda _a, _n, _s=None: [(0, 3, 4)])
+    monkeypatch.setattr(diarize, "_embedder", lambda: (_ for _ in ()).throw(RuntimeError("no model")))
+    out = diarize.label_cues(tmp_path / "a.mp3", [Cue(0, 3, "你好")], 2)
+    assert out[0].speaker == "講者1" and "voice check skipped" in capsys.readouterr().err

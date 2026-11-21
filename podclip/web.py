@@ -215,6 +215,8 @@ def build_argv(kind: str, o: dict, audio: Path | None, folder: Path) -> list[str
                 "--title-language", _choice(o, "title_language", TITLE_LANGUAGES, "繁體中文")]
     if kind == "more":
         return ["more", str(out), "--count", "1"]
+    if kind == "videos":
+        return ["videos", str(out)]
     raise ApiError(400, "unknown kind")
 
 
@@ -235,10 +237,10 @@ def start_job(state: State, kind: str, o: dict) -> Job:
             raise ApiError(409, "another job is still running")
         audio = None
         source = None
-        if kind in ("render", "notes", "more"):
+        if kind in ("render", "notes", "more", "videos"):
             parent = state.job(str(o.get("plan_job", "")))
             folder, source = parent.folder, parent.source
-            needed = {"render": "plan.json", "more": "clips.json"}.get(kind)
+            needed = {"render": "plan.json", "more": "clips.json", "videos": "clips.json"}.get(kind)
             if not (folder / "out").is_dir() or (needed and not (folder / "out" / needed).is_file()):
                 raise ApiError(400, "that job has no output to work from")
         else:
@@ -287,6 +289,16 @@ def alternates_left(job: Job) -> int | None:
     try:
         data = json.loads((job.folder / "out" / "clips.json").read_text(encoding="utf-8"))
         return len(data.get("alternates") or [])
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def wants_video(job: Job) -> bool | None:
+    """Whether the run asked for waveform videos (they are made on request, after the speaker names are final);
+    None when this job has no clips.json."""
+    try:
+        data = json.loads((job.folder / "out" / "clips.json").read_text(encoding="utf-8"))
+        return "video" in (data.get("options") or {}).get("formats", [])
     except (OSError, ValueError, AttributeError):
         return None
 
@@ -500,6 +512,7 @@ class Handler(BaseHTTPRequestHandler):
                     lines, total = job.lines[start:], job.dropped + len(job.lines)
                 return self._json({"status": job.status, "kind": job.kind, "lines": lines, "next": total,
                                    "alternates": alternates_left(job) if job.status != "running" else None,
+                                   "video": wants_video(job) if job.status != "running" else None,
                                    "elapsed": int(time.time() - job.started),
                                    "files": job_files(job) if job.status != "running" else []})
             if route == ("POST", "cancel"):

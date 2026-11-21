@@ -123,7 +123,7 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
     <label class="row"><span>要輸出</span>
       <label><input type="checkbox" class="fmt" value="audio" checked> 音檔</label>
       <label><input type="checkbox" class="fmt" value="srt" checked> 字幕</label>
-      <label><input type="checkbox" class="fmt" value="video"> 波形影片</label></label>
+      <label><input type="checkbox" class="fmt" value="video"> 波形影片（先不產生，確認說話者名字後再按鈕產生）</label></label>
     <label class="row"><span>用途</span><select id="preset">
       <option value="short">直式短影音（Reels／Shorts／TikTok／抖音）</option>
       <option value="square">方形貼文（IG／Facebook／Threads）</option>
@@ -187,7 +187,8 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
     <p class="label">完成</p>
     <h2 id="donetitle">完成</h2>
     <div id="donenote"></div>
-    <div class="actions" style="margin:0 0 12px"><button id="zipbtn">下載全部（ZIP）</button><button class="ghost" id="morebtn" hidden>再多挑一段</button></div>
+    <div class="actions" style="margin:0 0 12px"><button id="zipbtn">下載全部（ZIP）</button><button class="ghost" id="morebtn" hidden>再多挑一段</button><button id="videobtn" hidden>產生波形影片</button></div>
+    <p class="sub" id="videohint" hidden style="margin-bottom:12px">影片會把字幕與說話者名字燒進去，所以請先在下方確認名字再按。改了名字後再按一次，會用新名字重新產生。</p>
     <div class="files" id="files"></div>
     <p class="sub" id="where" style="margin-top:12px"></p>
     <div class="actions"><button class="ghost" onclick="location.reload()">處理另一個檔案</button></div>
@@ -204,7 +205,7 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
 <section class="card" id="spkbox" hidden>
   <p class="label">說話者</p>
   <h2>誰是誰？填上名字</h2>
-  <p class="sub" style="margin-bottom:12px">程式只能分出「不同的人」，不知道誰是誰，也可能分錯。對照每個人的幾句話，填上名字，會改寫字幕檔與之後輸出的文字稿；已經輸出的影片不會改。</p>
+  <p class="sub" style="margin-bottom:12px">程式只能分出「不同的人」，不知道誰是誰，也可能分錯。對照每個人的幾句話，填上名字，會改寫字幕檔與之後輸出的文字稿；波形影片等你確定名字後再按「產生波形影片」才會做，名字才會燒進去。</p>
   <div id="spkrows"></div>
   <div class="actions"><button id="spksave">套用名字</button><span class="sub" id="spkmsg" aria-live="polite"></span></div>
 </section>
@@ -468,6 +469,10 @@ $("#render").onclick = async () => {
 };
 
 $("#zipbtn").onclick = () => { location.href = "/zip/" + jobId + "?t=" + encodeURIComponent(T); };
+$("#videobtn").onclick = async () => {
+  try { await run({kind: "videos", plan_job: jobId, options: {}}, "正在產生波形影片（每段約需數秒到十幾秒）…"); }
+  catch (e) { alert(e.message); }
+};
 $("#morebtn").onclick = async () => {
   try { await run({kind: "more", plan_job: jobId, options: {}}, "正在切出下一段備選…"); }
   catch (e) { alert(e.message); }
@@ -491,7 +496,9 @@ $("#notescopy").onclick = () => navigator.clipboard.writeText($("#notestext").te
 function finish(d) {
   notesFrom = jobId; $("#notestext").hidden = true; $("#notescopy").hidden = true; $("#notesmsg").textContent = ""; $("#notescopy").textContent = "複製文案"; $("#notesbtn").disabled = false;
   show("#s3", false); show("#s5");
-  $("#donetitle").textContent = d.kind === "render" ? "剪輯完成" : "片段完成";
+  $("#donetitle").textContent = d.kind === "render" ? "剪輯完成" : d.kind === "videos" ? "影片完成" : "片段完成";
+  show("#videobtn", ["clips", "more", "videos"].includes(d.kind) && !!d.video); show("#videohint", ["clips", "more", "videos"].includes(d.kind) && !!d.video);
+  $("#videobtn").textContent = d.kind === "videos" ? "重新產生波形影片" : "產生波形影片";
   const box = $("#files"); box.replaceChildren();
   const shown = d.files.filter(f => d.kind === "render" ? /^episode_edited/.test(f.path) : true);
   if (!shown.length) $("#donenote").appendChild(el("div", "沒有產生任何檔案（可能沒有找到合適的片段）。", "note warn"));
@@ -508,7 +515,7 @@ function finish(d) {
   $("#where").textContent = "檔案也存在：" + where;
   show("#zipbtn", shown.length > 0);
   const alts = d.alternates, more = $("#morebtn");
-  show("#morebtn", (d.kind === "clips" || d.kind === "more") && alts != null);
+  show("#morebtn", (d.kind === "clips" || d.kind === "more" || d.kind === "videos") && alts != null);
   more.disabled = !alts; more.textContent = alts ? "再多挑一段（還有 " + alts + " 個備選）" : "沒有更多備選";
 }
 </script>

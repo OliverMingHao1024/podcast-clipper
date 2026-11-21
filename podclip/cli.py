@@ -8,7 +8,7 @@ import os
 import re
 import time
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from . import __version__, srt
@@ -136,14 +136,42 @@ def _render_clip(n: int, clip: Clip, src: Path, cues: list[srt.Cue], out: Path, 
         formats = options["formats"]
         base = folder / "clip"
         audio = cut_audio(src, clip, base, options["audio_ext"]) if ("audio" in formats or "video" in formats) else None
-        subs = write_srt(cues, clip, base) if "srt" in formats else None
-        if "video" in formats and audio and subs:
-            if any(c.speaker for c in cues):  # the video shows the words only; names can be renamed later in the .srt
-                subs = write_srt(cues, clip, folder / ".video", labels=False)
-            waveform_video(audio, subs, clip.duration, base, font=options["font"], wave_color=options["wave_color"],
-                           aspect=options.get("aspect", "9:16"))
+        if "srt" in formats:
+            write_srt(cues, clip, base)  # the video is made later by `podclip videos`, once the speaker names are final
         (folder / "post.txt").write_text(_post_text(clip), encoding="utf-8")
     return entry
+
+
+def _videos(args: argparse.Namespace) -> int:
+    """Make the waveform video of every clip from its current clip.srt, with the speaker names burned in.
+
+    Videos are not made by `run`/`more`: the speakers are labelled first and renamed by hand, and a video made
+    earlier would carry the wrong names. Running this again after a rename redoes every video.
+    """
+    out = Path(args.out).expanduser().resolve()
+    try:
+        manifest = json.loads((out / "clips.json").read_text(encoding="utf-8"))
+        options, clips = manifest["options"], list(manifest["clips"])
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        raise SystemExit(f"{out / 'clips.json'} cannot be used ({error}); run `podclip run` first")
+    made = 0
+    for entry in clips:
+        folder = out / entry["folder"]
+        audio = next((folder / f"clip{ext}" for ext in (".mp3", ".m4a", ".wav") if (folder / f"clip{ext}").is_file()), None)
+        if audio is None or not (folder / "clip.srt").is_file():
+            print(f"skipped {entry['folder']}: no clip audio or subtitles", file=sys.stderr)
+            continue
+        cues = srt.read(folder / "clip.srt")
+        burned = folder / ".video.srt"  # "name：words" per line; the .srt shown to the user keeps its 【name】 labels
+        srt.write(burned, [replace(c, text=c.spoken, speaker="") for c in cues])
+        waveform_video(audio, burned, entry["end"] - entry["start"], folder / "clip", font=options["font"],
+                       wave_color=options["wave_color"], aspect=options.get("aspect", "9:16"))
+        made += 1
+        print(f"video {made}/{len(clips)}: {entry['folder']}", file=sys.stderr, flush=True)
+    if not made:
+        raise SystemExit("no clips to make videos for")
+    print(f"done: {made} videos -> {out}", file=sys.stderr)
+    return 0
 
 
 def _write_manifest(out: Path, manifest: dict) -> None:
@@ -302,6 +330,9 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--backend", choices=("claude", *named_commands()), default="claude", help="AI tool for --ai")
     c.add_argument("--workdir", default="podclip-work")
     c.add_argument("-v", "--verbose", action="store_true")
+    v = sub.add_parser("videos", help="make the waveform videos of an earlier `run` (after the speaker names are final)")
+    v.add_argument("out", help="the --out folder of the earlier run (contains clips.json)")
+    v.add_argument("-v", "--verbose", action="store_true")
     m = sub.add_parser("more", help="cut more clips from the alternates an earlier `run` kept")
     m.add_argument("out", help="the --out folder of the earlier run (contains clips.json)")
     m.add_argument("--count", type=int, default=1)
@@ -328,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
             return _notes(args)
         if args.command == "more":
             return _more(args)
+        if args.command == "videos":
+            return _videos(args)
         if args.command == "doctor":
             return _doctor(args)
         if args.command == "edit-render":
