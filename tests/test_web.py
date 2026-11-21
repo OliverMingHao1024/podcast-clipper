@@ -314,3 +314,59 @@ def test_doctor_endpoint(server, monkeypatch):
     assert status == 200 and any(c["id"] == "python" for c in json.loads(body)["checks"])
     assert call(server, "GET", "/api/doctor?backend=rm")[0] == 400
     assert call(server, "GET", "/api/doctor", token=False)[0] == 403
+
+
+def test_speaker_option_is_a_small_whole_number(tmp_path):
+    audio = tmp_path / "a.mp3"
+    argv = web.build_argv("plan", {"speakers": 3}, audio, tmp_path)
+    assert argv[argv.index("--speakers") + 1] == "3"
+    assert "--speakers" not in web.build_argv("plan", {}, audio, tmp_path)
+    assert "--speakers" not in web.build_argv("clips", {"formats": ["audio"], "speakers": 0}, audio, tmp_path)
+    for bad in (1, 9, 2.5, "3", True, [3]):
+        with pytest.raises(web.ApiError):
+            web.build_argv("clips", {"formats": ["audio"], "speakers": bad}, audio, tmp_path)
+
+
+def test_speaker_rename_rewrites_every_subtitle_file_and_nothing_else(server, tmp_path):
+    from podclip import srt
+    folder = tmp_path / "job"
+    (folder / "out" / "01_clip").mkdir(parents=True)
+    cues = [srt.Cue(0, 30, "第一句夠長的範例句子", "講者1"), srt.Cue(30, 60, "第二句夠長的範例句子", "講者2")]
+    srt.write(folder / "out" / "ep.srt", cues)
+    srt.write(folder / "out" / "01_clip" / "clip.srt", cues[:1])
+    srt.write(folder / "out" / "01_clip" / ".video.srt", cues[:1], labels=False)  # hidden helper file, never touched
+    job = web.Job("clips", folder)
+    job.status = "done"
+    server.state.jobs[job.id] = job
+    status, body = call(server, "GET", f"/api/speakers/{job.id}")
+    assert status == 200 and [s["label"] for s in json.loads(body)["speakers"]] == ["講者1", "講者2"]
+    assert call(server, "POST", f"/api/speakers/{job.id}", {"names": "x"})[0] == 400
+    assert call(server, "POST", f"/api/speakers/{job.id}", {"names": {"講者1": "含【】"}})[0] == 400
+    assert call(server, "POST", f"/api/speakers/{job.id}", {"names": {"講者1": "小明", "講者2": "  "}})[0] == 200
+    assert [c.speaker for c in srt.read(folder / "out" / "ep.srt")] == ["小明", "講者2"]
+    assert srt.read(folder / "out" / "01_clip" / "clip.srt")[0].speaker == "小明"
+    assert srt.read(folder / "out" / "01_clip" / ".video.srt")[0].speaker == ""
+    assert call(server, "GET", f"/api/speakers/{job.id}", token=False)[0] == 403
+
+
+def test_a_job_without_labels_has_no_speakers(server, tmp_path):
+    from podclip import srt
+    folder = tmp_path / "job"
+    (folder / "out").mkdir(parents=True)
+    srt.write(folder / "out" / "ep.srt", [srt.Cue(0, 5, "沒有講者標籤的字幕")])
+    job = web.Job("plan", folder)
+    server.state.jobs[job.id] = job
+    assert json.loads(call(server, "GET", f"/api/speakers/{job.id}")[1])["speakers"] == []
+
+
+def test_estimate_counts_speaker_labelling(server, monkeypatch):
+    up = _upload_audio(server)
+    monkeypatch.setattr(web, "audio_duration", lambda _p: 3600.0)
+    base = json.loads(call(server, "POST", "/api/estimate", {"kind": "clips", "upload_id": up, "options": {}})[1])["estimate"]
+    withs = json.loads(call(server, "POST", "/api/estimate", {"kind": "clips", "upload_id": up, "options": {"speakers": 3}})[1])["estimate"]
+    assert base["speaker_sec"] == 0 and withs["speaker_sec"] > 0 and withs["total_sec"] > base["total_sec"]
+    assert call(server, "POST", "/api/estimate", {"kind": "clips", "upload_id": up, "options": {"speakers": 99}})[0] == 400
+
+
+def test_env_reports_whether_speaker_labels_are_installed(server):
+    assert "speakers" in json.loads(call(server, "GET", "/api/env")[1])

@@ -30,6 +30,12 @@ if [ ! -x ".venv/bin/python" ]; then
   }
 fi
 
+# Optional speaker labels: older private environments get the extra component once; a failure only disables that feature.
+if ! .venv/bin/python -c "import sherpa_onnx" >/dev/null 2>&1; then
+  echo "Installing the optional speaker-labelling component, one time..."
+  .venv/bin/python -m pip install -q -e ".[speakers]" || echo "Speaker labels will be unavailable, install failed."
+fi
+
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "WARNING: ffmpeg was not found. Install it first (macOS: brew install ffmpeg), otherwise cutting will fail."
 fi

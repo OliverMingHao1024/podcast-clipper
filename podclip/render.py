@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from . import srt
@@ -43,13 +44,13 @@ def cut_audio(src: Path, clip: Clip, out: Path, ext: str = ".mp3") -> Path:
 
 
 def clip_cues(cues: list[srt.Cue], clip: Clip) -> list[srt.Cue]:
-    return [srt.Cue(max(c.start, clip.start), min(c.end, clip.end), c.text)
+    return [replace(c, start=max(c.start, clip.start), end=min(c.end, clip.end))
             for c in cues[clip.start_row:clip.end_row + 1]]
 
 
-def write_srt(cues: list[srt.Cue], clip: Clip, out: Path) -> Path:
+def write_srt(cues: list[srt.Cue], clip: Clip, out: Path, *, labels: bool = True) -> Path:
     target = out.with_suffix(".srt")
-    srt.write(target, clip_cues(cues, clip), offset=clip.start)
+    srt.write(target, clip_cues(cues, clip), offset=clip.start, labels=labels)
     return target
 
 

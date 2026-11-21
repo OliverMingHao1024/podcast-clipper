@@ -136,6 +136,8 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
     <label class="row"><span>最多幾段</span><input type="number" id="maxClips" value="10" min="1" max="30"></label>
   </div>
   <label class="row" id="srtrow" hidden><span>字幕檔</span><label><input type="checkbox" id="useSrt" checked> 使用我附上的字幕檔，跳過語音辨識（時間要和這個音檔對得上）</label></label>
+  <label class="row" id="spkrow"><span>說話者辨識</span><label><input type="checkbox" id="useSpk"> 標出誰在說話，共 <input type="number" id="spkN" value="3" min="2" max="8" aria-label="說話的人數"> 人</label>
+    <small class="sub" id="spkhint">第一次會下載約 46 MB 的模型；音檔每 10 分鐘約多花 1 分鐘。人數要填對才準。</small></label>
   <div id="optPlan" hidden>
     <label class="row"><span>AI 協助</span><label><input type="checkbox" id="useAI" checked> 讓 AI 找出講錯重來與雜音事故（需要本機已登入 AI 命令列工具）</label></label>
   </div>
@@ -199,6 +201,13 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
     <div class="actions"><button class="ghost" id="notescopy" hidden>複製文案</button></div>
   </section>
 </div>
+<section class="card" id="spkbox" hidden>
+  <p class="label">說話者</p>
+  <h2>誰是誰？填上名字</h2>
+  <p class="sub" style="margin-bottom:12px">程式只能分出「不同的人」，不知道誰是誰，也可能分錯。對照每個人的幾句話，填上名字，會改寫字幕檔與之後輸出的文字稿；已經輸出的影片不會改。</p>
+  <div id="spkrows"></div>
+  <div class="actions"><button id="spksave">套用名字</button><span class="sub" id="spkmsg" aria-live="polite"></span></div>
+</section>
 </main>
 <script>
 const T = "__TOKEN__";
@@ -222,6 +231,7 @@ api("/api/env").then(env => {
   const box = $("#envnote");
   const add = (cls, text) => { const n = el("div", text, "note " + cls); box.appendChild(n); };
   if (!env.ffmpeg) add("bad", "找不到 ffmpeg，無法切音檔。請先安裝 ffmpeg（見 README）。");
+  if (!env.speakers) { $("#useSpk").disabled = true; $("#spkN").disabled = true; $("#spkhint").textContent = "尚未安裝這個選用功能：關掉視窗，重新雙擊啟動檔會自動安裝。"; }
   if (!env.whisper) add("bad", "尚未安裝語音辨識（faster-whisper）。請用 start.bat 啟動，或依 README 安裝。");
   const sel = $("#backend"); let first = null;
   env.backends.forEach(b => { const o = el("option", b.name + (b.ready ? "" : "（未安裝）")); o.value = b.name; o.disabled = !b.ready; sel.appendChild(o); if (b.ready && !first) first = b.name; });
@@ -294,12 +304,13 @@ async function doEstimate() {
     if (!d.estimate) { show("#estimate", false); return; }
     const e = d.estimate, parts = [];
     if (e.transcribe_sec) parts.push("語音辨識" + fmtSec(e.transcribe_sec));
+    if (e.speaker_sec) parts.push("說話者辨識" + fmtSec(e.speaker_sec));
     if (e.ai_calls) parts.push("AI " + e.ai_calls + " 次呼叫（" + fmtSec(e.ai_sec) + "）");
     box.replaceChildren(el("div", "預估：" + (parts.join("、") || "幾乎立刻完成") + (e.total_sec ? "，合計" + fmtSec(e.total_sec) : "") + "。"));
     box.appendChild(el("small", e.notes.join(" "))); show("#estimate");
   } catch (_) { show("#estimate", false); }
 }
-["whisper", "device", "backend", "useAI", "useSrt", "maxClips"].forEach(id => $("#" + id).addEventListener("change", refreshEstimate));
+["whisper", "device", "backend", "useAI", "useSrt", "maxClips", "useSpk", "spkN"].forEach(id => $("#" + id).addEventListener("change", refreshEstimate));
 document.querySelectorAll("input[name=mode]").forEach(r => r.addEventListener("change", refreshEstimate));
 
 const GLYPH = {ok: "✓", warn: "!", fail: "✗", info: "·"};
@@ -333,7 +344,9 @@ function currentRequest() {
 }
 
 function common() {
-  return {backend: $("#backend").value, whisper_model: $("#whisper").value, language: $("#lang").value, title_language: $("#tlang").value, device: $("#device").value};
+  const n = Math.round(+$("#spkN").value);
+  return {backend: $("#backend").value, whisper_model: $("#whisper").value, language: $("#lang").value, title_language: $("#tlang").value, device: $("#device").value,
+    speakers: $("#useSpk").checked && !$("#useSpk").disabled ? Math.min(8, Math.max(2, n || 3)) : 0};
 }
 
 $("#go").onclick = async () => {
@@ -363,6 +376,29 @@ async function poll(since) {
   if (d.status === "cancelled") { $("#runtitle").textContent = "已取消"; $("#cancel").disabled = true; show("#s2"); return; }
   if (d.status === "failed") { $("#runtitle").textContent = "失敗"; $("#cancel").disabled = true; $("#runmsg").textContent = "請展開「詳細紀錄」查看原因（例如 AI 工具的登入已過期）。"; show("#s2"); return; }
   if (d.kind === "plan") { planJob = jobId; await loadPlan(); } else finish(d);
+  loadSpeakers(jobId);
+}
+
+async function loadSpeakers(job) {
+  show("#spkbox", false);
+  let list = [];
+  try { list = (await api("/api/speakers/" + job)).speakers || []; } catch (_) { return; }
+  if (!list.length) return;
+  const box = $("#spkrows"); box.replaceChildren(); $("#spkmsg").textContent = "";
+  list.forEach(s => {
+    const row = el("label", null, "row"), name = el("span", s.label + "（約 " + Math.max(1, Math.round(s.seconds / 60)) + " 分鐘）");
+    const inp = el("input"); inp.type = "text"; inp.maxLength = 20; inp.placeholder = "例如：小明"; inp.dataset.label = s.label; inp.setAttribute("aria-label", "把「" + s.label + "」改名為");
+    row.appendChild(name); row.appendChild(inp);
+    if (s.samples.length) row.appendChild(el("small", "例：" + s.samples.join(" ／ "), "sub"));
+    box.appendChild(row);
+  });
+  $("#spksave").onclick = async () => {
+    const names = {}; box.querySelectorAll("input").forEach(i => { if (i.value.trim()) names[i.dataset.label] = i.value.trim(); });
+    if (!Object.keys(names).length) { $("#spkmsg").textContent = "先在上面填至少一個名字。"; return; }
+    try { const r = await post("/api/speakers/" + job, {names}); await loadSpeakers(job); $("#spkmsg").textContent = "已套用（改寫 " + r.changed + " 個字幕檔）。"; }
+    catch (e) { $("#spkmsg").textContent = "失敗：" + e.message; }
+  };
+  show("#spkbox");
 }
 
 $("#cancel").onclick = () => post("/api/cancel/" + jobId, {}).catch(() => {});

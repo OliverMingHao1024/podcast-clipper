@@ -67,6 +67,7 @@ AI 讀完整份逐字稿，挑出約 1～3 分鐘、有完整問答或完整觀�
 
 - **開始前先預估**：依音檔長度顯示語音辨識約幾分鐘、AI 約幾次呼叫（會計入訂閱用量）。辨識時間一開始是參考值，跑過幾次後會改用這台電腦的實測。
 - **附上現成字幕檔**：已有 `.srt` 就能附上，直接跳過語音辨識，省下最久的一步。字幕時間要和音檔對得上。
+- **標出誰在說話（選用）**：填入說話的人數（預設 3 人），逐字稿與字幕會標上「講者1、講者2…」，AI 讀得到是誰在講，選段更容易抓到完整的一問一答。跑完後在網頁填上名字，字幕檔會一起改。程式只能分出「不同的人」，不知道誰是誰，搶話、笑聲和背景音會分錯，請當作草稿；人數必須填對，無法自動判斷。第一次使用會下載約 46 MB 的模型，音檔每 10 分鐘約多花 1 分鐘（一台 16 核心 CPU 實測 58～80 秒）。波形影片燒的字幕不含名字。
 - **環境自我檢查**：標題列的按鈕會逐項檢查 ffmpeg、語音辨識、AI 工具與硬碟空間，並告訴你缺什麼、怎麼補；「連 AI 一起測」會確認 AI 工具已登入。
 
 ## 快速開始
@@ -95,6 +96,7 @@ podclip notes episode_edited.srt        # 集數介紹文案
 podclip web                             # 啟動網頁介面
 podclip doctor --ai                     # 檢查環境，並測試 AI 工具是否已登入
 podclip run episode.mp3 --srt episode.srt   # 用現成字幕，跳過語音辨識
+podclip edit-plan episode.mp3 --speakers 3  # 標出誰在說話（需 pip install -e ".[speakers]"）
 ```
 
 ## AI 工具
@@ -144,7 +146,7 @@ AI 功能（挑片段、剪輯建議、段落大綱、介紹文案）透過你�
 <details>
 <summary>目前還有哪些沒驗證？</summary>
 
-macOS 尚未在實機測試（特別是波形影片字幕的字型）、Gemini 等其他廠牌的 CLI 尚未驗證，請先用自訂檔在自己的電腦上試跑。
+macOS 尚未在實機測試（特別是波形影片字幕的字型，以及說話者辨識套件）、說話者辨識只在兩集各 10 分鐘的中文節目上試跑過，分得準不準沒有用人工標註核對、Gemini 等其他廠牌的 CLI 尚未驗證，請先用自訂檔在自己的電腦上試跑。
 </details>
 
 ## 參與
@@ -154,7 +156,7 @@ macOS 尚未在實機測試（特別是波形影片字幕的字型）、Gemini �
 
 ## 致謝
 
-選段的核心概念與提示詞寫法改編自開源專案 [AutoClip](https://github.com/zhouxiaoka/autoclip)（MIT 授權）；本專案為重新實作，授權聲明見 [NOTICE.md](NOTICE.md)。語音辨識使用 [faster-whisper](https://github.com/SYSTRAN/faster-whisper)，影音處理使用 [FFmpeg](https://ffmpeg.org/)。
+選段的核心概念與提示詞寫法改編自開源專案 [AutoClip](https://github.com/zhouxiaoka/autoclip)（MIT 授權）；本專案為重新實作，授權聲明見 [NOTICE.md](NOTICE.md)。語音辨識使用 [faster-whisper](https://github.com/SYSTRAN/faster-whisper)，說話者辨識使用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0）搭配 pyannote 分段模型（MIT）與 3D-Speaker 聲紋模型（Apache-2.0），影音處理使用 [FFmpeg](https://ffmpeg.org/)。
 
 ## 授權
 

@@ -206,7 +206,7 @@ def find_clips_with_alternates(cues: list[Cue], backend: LLMBackend, cfg: Config
         prompt = PROMPT.format(min_sec=cfg.min_sec, max_sec=cfg.max_sec, target_lo=cfg.target_lo,
                                target_hi=cfg.target_hi, count_lo=count_lo, count_hi=count_hi,
                                language=cfg.language, title_max=20)
-        rows = "\n".join(f"{i}|{clock(cues[i].start)}|{cues[i].text}" for i in range(first, last + 1))
+        rows = "\n".join(f"{i}|{clock(cues[i].start)}|{cues[i].spoken}" for i in range(first, last + 1))
         user = f"{prompt}\n<transcript>\n{rows}\n</transcript>"
         result: list[Clip] | None = None
         for attempt in range(2):

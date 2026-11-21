@@ -20,7 +20,7 @@ import logging
 import re
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -143,7 +143,7 @@ def ai_cuts(cues: list[srt.Cue], backend: LLMBackend, language: str = "繁體中
     failed = 0
     spans = windows(cues, cfg)
     for first, last in spans:
-        rows = "\n".join(f"{i}|{clock(cues[i].start)}|{cues[i].text}" for i in range(first, last + 1))
+        rows = "\n".join(f"{i}|{clock(cues[i].start)}|{cues[i].spoken}" for i in range(first, last + 1))
         user = f"{AI_PROMPT.format(language=language)}<transcript>\n{rows}\n</transcript>"
         result = None
         for attempt in range(2):
@@ -342,7 +342,7 @@ def remap_cues(cues: list[srt.Cue], cuts: list[Cut], duration: float) -> list[sr
     for c in cues:
         start, end = new_time(c.start), new_time(c.end)
         if end - start >= MIN_PIECE:
-            out.append(srt.Cue(start, end, c.text))
+            out.append(replace(c, start=start, end=end))
     return out
 
 

@@ -16,6 +16,7 @@ LOAD_SEC = 0  # model loading is already part of the measured ratios below
 AI_CALL_SEC = 12  # one model call; measured 6-10 s on short and full-length transcripts
 WINDOW_SEC, OVERLAP_SEC = 3600, 240  # same as finder.Config
 KEEP_RUNS = 5
+SPEAKER_RTF = 0.13  # speaker labelling: 58-80 s per 10 audio minutes on a 16-core CPU (4 threads); not learned per computer
 
 # (model, device) -> processing seconds per audio second. CPU: measured on a 16-core desktop with 2-10 minute
 # samples (it varies with other load, small gave 0.17-0.23). cuda: small measured on an RTX 3060 (65 min in 160 s);
@@ -64,7 +65,7 @@ def rtf(model: str, device: str, stats_path: Path | None = None) -> tuple[float,
 
 
 def estimate(kind: str, duration: float, *, model: str = "small", device: str = "cpu", has_srt: bool = False,
-             use_ai: bool = True, stats_path: Path | None = None) -> dict:
+             use_ai: bool = True, stats_path: Path | None = None, speakers: bool = False) -> dict:
     """kind is "clips" or "plan". Returns seconds and call counts plus short notes for the page."""
     notes: list[str] = []
     windows = windows_for(duration)
@@ -82,9 +83,13 @@ def estimate(kind: str, duration: float, *, model: str = "small", device: str = 
         calls = 2 * windows if use_ai else 0  # AI cuts + the section outline, one pass each
     else:
         raise ValueError("kind must be clips or plan")
+    speaker_sec = SPEAKER_RTF * duration if speakers else 0.0
+    if speakers:
+        notes.append("說話者辨識時間是參考值；第一次使用要先下載約 46 MB 的模型。")
     ai_sec = calls * AI_CALL_SEC
     if calls:
         notes.append(f"AI 約 {calls} 次呼叫，會計入你的訂閱用量。")
     notes.append("不含切檔與輸出影片的時間。")
-    return {"transcribe_sec": round(transcribe_sec), "ai_calls": calls, "ai_sec": round(ai_sec),
-            "total_sec": round(transcribe_sec + ai_sec), "windows": windows, "notes": notes}
+    return {"transcribe_sec": round(transcribe_sec), "speaker_sec": round(speaker_sec), "ai_calls": calls,
+            "ai_sec": round(ai_sec), "total_sec": round(transcribe_sec + speaker_sec + ai_sec), "windows": windows,
+            "notes": notes}

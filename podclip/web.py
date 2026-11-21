@@ -166,6 +166,16 @@ def _srt_arg(o: dict, audio: Path) -> list[str]:
     return ["--srt", str(path)]
 
 
+def _speakers_arg(o: dict) -> list[str]:
+    """``--speakers N`` when the page asked for speaker labels (0 or missing = off)."""
+    count = o.get("speakers", 0)
+    if not count:
+        return []
+    if isinstance(count, bool) or not isinstance(count, int) or not 2 <= count <= 8:
+        raise ApiError(400, "bad value for speakers")
+    return ["--speakers", str(count)]
+
+
 def _common(o: dict) -> list[str]:
     args = [*_backend_arg(o),
             "--device", _choice(o, "device", ("cpu", "cuda"), "cpu"),
@@ -186,11 +196,12 @@ def build_argv(kind: str, o: dict, audio: Path | None, folder: Path) -> list[str
         if low > high:
             raise ApiError(400, "min_sec is larger than max_sec")
         return ["run", str(audio), "--out", str(out), *_srt_arg(o, audio), "--formats", ",".join(formats),
-                "--max-clips", str(int(_number(o, "max_clips", 1, 30, 10))),
+                "--max-clips", str(int(_number(o, "max_clips", 1, 30, 10))), *_speakers_arg(o),
                 "--min-sec", str(low), "--max-sec", str(high), "--aspect", _choice(o, "aspect", tuple(ASPECTS), "9:16"),
                 *_common(o)]
     if kind == "plan":
-        return ["edit-plan", str(audio), "--out", str(out), *_srt_arg(o, audio), *_common(o), *(["--no-ai"] if o.get("no_ai") else [])]
+        return ["edit-plan", str(audio), "--out", str(out), *_srt_arg(o, audio), *_speakers_arg(o), *_common(o),
+                *(["--no-ai"] if o.get("no_ai") else [])]
     if kind == "render":
         ext = _choice(o, "format", OUT_EXT, ".mp3")
         srts = sorted(out.glob("*.srt"))
@@ -239,7 +250,7 @@ def start_job(state: State, kind: str, o: dict) -> Job:
         job.source = source
         env ={**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
                "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_VERBOSITY": "error", "PYTHONWARNINGS": "ignore",
-               "PODCLIP_STATS": str(state.workdir / "speed.json"),
+               "PODCLIP_STATS": str(state.workdir / "speed.json"), "PODCLIP_MODELS": str(state.workdir / "models"),
                "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).resolve().parent.parent),
                                                            os.environ.get("PYTHONPATH", "")]))}
         job.proc = subprocess.Popen([sys.executable, "-m", "podclip.cli", *argv], cwd=folder, env=env, text=True,
@@ -316,8 +327,44 @@ def save_plan_flags(job: Job, flags: list) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _srt_files(job: Job) -> list[Path]:
+    out = job.folder / "out"
+    return [p for p in sorted(out.rglob("*.srt")) if not any(part.startswith(".") for part in p.relative_to(out).parts)]
+
+
+def read_speakers(job: Job) -> list[dict]:
+    """Speakers found in the job's episode subtitles (empty when the run did not label them)."""
+    from . import diarize, srt
+    top = sorted((job.folder / "out").glob("*.srt"))
+    try:
+        return diarize.summarize(srt.read(top[0])) if top else []
+    except (OSError, ValueError):
+        return []
+
+
+def rename_speakers(job: Job, names: object) -> int:
+    """Apply {old label: new name} to every subtitle file of the job; returns how many files changed."""
+    from . import diarize, srt
+    if not isinstance(names, dict) or not 0 < len(names) <= 20 or not all(isinstance(v, str) for v in names.values()):
+        raise ApiError(400, "names must map each speaker to a new name")
+    if not any(diarize.clean_name(v) for v in names.values()):
+        raise ApiError(400, "type at least one usable name (1-20 characters, without 【 or 】)")
+    changed = 0
+    for path in _srt_files(job):
+        try:
+            cues = srt.read(path)
+        except (OSError, ValueError):
+            continue
+        renamed = diarize.rename(cues, names)
+        if renamed != cues:
+            srt.write(path, renamed)
+            changed += 1
+    return changed
+
+
 def environment() -> dict:
-    return {"ffmpeg": bool(shutil.which("ffmpeg")), "backends": backend_status(),
+    from . import diarize
+    return {"ffmpeg": bool(shutil.which("ffmpeg")), "backends": backend_status(), "speakers": diarize.available(),
             "whisper": find_spec("faster_whisper") is not None, "platform": sys.platform}
 
 
@@ -463,6 +510,11 @@ class Handler(BaseHTTPRequestHandler):
             if route == ("POST", "plan"):
                 save_plan_flags(job, self._body().get("apply"))
                 return self._json({"ok": True})
+            if route == ("GET", "speakers"):
+                return self._json({"speakers": read_speakers(job)})
+            if route == ("POST", "speakers"):
+                changed = rename_speakers(job, self._body().get("names"))
+                return self._json({"changed": changed, "speakers": read_speakers(job)})
         raise ApiError(404, "not found")
 
     def _upload(self, name: str) -> None:
@@ -506,7 +558,8 @@ class Handler(BaseHTTPRequestHandler):
         has_srt = bool(o.get("use_srt")) and self.state.upload_srt(str(data["upload_id"])) is not None
         result = estimate(kind, duration, model=_choice(o, "whisper_model", WHISPER_MODELS, "small"),
                           device=_choice(o, "device", ("cpu", "cuda"), "cpu"), has_srt=has_srt,
-                          use_ai=not o.get("no_ai"), stats_path=self.state.workdir / "speed.json")
+                          use_ai=not o.get("no_ai"), stats_path=self.state.workdir / "speed.json",
+                          speakers=bool(_speakers_arg(o)))
         return {"estimate": result, "duration": duration}
 
     def _subtitles(self, upload_id: str) -> None:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 MAX_SRT_BYTES = 5 * 1024 * 1024
 _TIME = re.compile(r"(\d+):(\d{2}):(\d{2})[,.](\d{1,3})")
+_SPEAKER = re.compile(r"^【([^【】]{1,20})】\s*")  # "【小明】text": the speaker label, when a file has one
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,12 @@ class Cue:
     start: float
     end: float
     text: str
+    speaker: str = ""
+
+    @property
+    def spoken(self) -> str:
+        """The line as the model should read it: "name：text" when the speaker is known."""
+        return f"{self.speaker}：{self.text}" if self.speaker else self.text
 
 
 def to_seconds(stamp: str) -> float:
@@ -46,7 +53,11 @@ def parse(text: str) -> list[Cue]:
             continue
         body = " ".join(ln.strip() for ln in lines[arrow + 1:]).strip()
         if body and end > start:
-            cues.append(Cue(start, end, body))
+            tag = _SPEAKER.match(body)
+            if tag and body[tag.end():].strip():
+                cues.append(Cue(start, end, body[tag.end():].strip(), tag[1].strip()))
+            else:
+                cues.append(Cue(start, end, body))
     cues.sort(key=lambda c: c.start)
     return cues
 
@@ -61,8 +72,9 @@ def read(path: Path) -> list[Cue]:
     return cues
 
 
-def write(path: Path, cues: list[Cue], *, offset: float = 0.0) -> None:
+def write(path: Path, cues: list[Cue], *, offset: float = 0.0, labels: bool = True) -> None:
     out = []
     for n, c in enumerate(cues, 1):
-        out.append(f"{n}\n{to_stamp(c.start - offset)} --> {to_stamp(c.end - offset)}\n{c.text}\n")
+        label = f"【{c.speaker}】" if c.speaker and labels else ""
+        out.append(f"{n}\n{to_stamp(c.start - offset)} --> {to_stamp(c.end - offset)}\n{label}{c.text}\n")
     Path(path).write_text("\n".join(out), encoding="utf-8")

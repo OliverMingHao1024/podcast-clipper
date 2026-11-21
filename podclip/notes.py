@@ -112,7 +112,7 @@ def episode_notes(cues: list[Cue], backend: LLMBackend, language: str = "ÁπÅÈ´î‰
     for first, last in spans:
         hours = (cues[last].end - cues[first].start) / 3600
         prompt = PROMPT.format(language=language, lo=max(3, round(5 * hours)), hi=max(6, round(10 * hours)))
-        rows = "\n".join(f"{i}|{clock(cues[i].start)}|{cues[i].text}" for i in range(first, last + 1))
+        rows = "\n".join(f"{i}|{clock(cues[i].start)}|{cues[i].spoken}" for i in range(first, last + 1))
         got = _ask(backend, f"{prompt}<transcript>\n{rows}\n</transcript>", lambda raw, f=first, l=last: parse_window(raw, f, l))
         if got:
             parts.append(got)
@@ -170,7 +170,7 @@ def episode_outline(cues: list[Cue], backend: LLMBackend, language: str = "ÁπÅÈ´
     for first, last in spans:
         hours = (cues[last].end - cues[first].start) / 3600
         prompt = OUTLINE_PROMPT.format(language=language, lo=max(3, round(12 * hours)), hi=max(6, round(30 * hours)))
-        rows = "\n".join(f"{i}|{clock(cues[i].start)}|{cues[i].text}" for i in range(first, last + 1))
+        rows = "\n".join(f"{i}|{clock(cues[i].start)}|{cues[i].spoken}" for i in range(first, last + 1))
         user = f"{prompt}<transcript>\n{rows}\n</transcript>"
         result = None
         for _ in range(2):

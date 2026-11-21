@@ -47,7 +47,34 @@ def _transcribe(src: Path, args: argparse.Namespace) -> list[srt.Cue]:
     return cues
 
 
+def _speakers_check(args: argparse.Namespace) -> int:
+    """Validate --speakers before any slow step; 0 means off."""
+    count = getattr(args, "speakers", 0) or 0
+    if count:
+        from . import diarize
+        try:
+            diarize.check_count(count)
+            diarize.require()
+        except (ValueError, RuntimeError) as error:
+            raise SystemExit(str(error))
+    return count
+
+
+def _label_speakers(src: Path, cues: list[srt.Cue], count: int) -> tuple[list[srt.Cue], bool]:
+    """Add 講者N labels. A failure here keeps the transcript the slow step already produced and says so."""
+    from . import diarize
+    try:
+        labelled = diarize.label_cues(src, cues, count)
+    except (RuntimeError, ValueError, OSError) as error:
+        print(f"warning: speaker labels skipped: {error}", file=sys.stderr)
+        return cues, False
+    found = sorted({c.speaker for c in labelled if c.speaker})
+    print(f"speakers: {len(found)} found ({', '.join(found)})", file=sys.stderr)
+    return labelled, bool(found)
+
+
 def _run(args: argparse.Namespace) -> int:
+    count = _speakers_check(args)
     src = Path(args.input).expanduser().resolve()
     if not src.is_file() or src.suffix.lower() not in AUDIO_EXT:
         raise SystemExit(f"not a supported audio file: {src}")
@@ -57,10 +84,14 @@ def _run(args: argparse.Namespace) -> int:
     if "video" in formats and "srt" not in formats:
         formats.append("srt")  # the video burns the subtitles in
 
+    labelled = False
     if args.srt:
         cues = srt.read(Path(args.srt).expanduser())
     else:
         cues = _transcribe(src, args)
+    if count:
+        cues, labelled = _label_speakers(src, cues, count)
+    if not args.srt or labelled:  # a labelled copy replaces the attached file as the episode's subtitles
         Path(args.out).mkdir(parents=True, exist_ok=True)
         srt.write(Path(args.out) / f"{src.stem}.srt", cues)
 
@@ -76,7 +107,7 @@ def _run(args: argparse.Namespace) -> int:
     options = {"formats": formats, "audio_ext": args.audio_ext, "font": args.font, "wave_color": args.wave_color,
                "aspect": args.aspect}
     manifest = [_render_clip(n, clip, src, cues, out, options, args.dry_run) for n, clip in enumerate(clips, 1)]
-    srt_path = Path(args.srt).expanduser().resolve() if args.srt else out / f"{src.stem}.srt"
+    srt_path = Path(args.srt).expanduser().resolve() if args.srt and not labelled else out / f"{src.stem}.srt"
     _write_manifest(out, {"source": src.name, "source_path": str(src), "srt_path": str(srt_path), "options": options,
                           "clips": manifest, "alternates": [_clip_fields(c) for c in alternates]})
     for e in manifest:
@@ -107,6 +138,8 @@ def _render_clip(n: int, clip: Clip, src: Path, cues: list[srt.Cue], out: Path, 
         audio = cut_audio(src, clip, base, options["audio_ext"]) if ("audio" in formats or "video" in formats) else None
         subs = write_srt(cues, clip, base) if "srt" in formats else None
         if "video" in formats and audio and subs:
+            if any(c.speaker for c in cues):  # the video shows the words only; names can be renamed later in the .srt
+                subs = write_srt(cues, clip, folder / ".video", labels=False)
             waveform_video(audio, subs, clip.duration, base, font=options["font"], wave_color=options["wave_color"],
                            aspect=options.get("aspect", "9:16"))
         (folder / "post.txt").write_text(_post_text(clip), encoding="utf-8")
@@ -155,11 +188,14 @@ def _edit_plan(args: argparse.Namespace) -> int:
     src = _supported_audio(args.input)
     out = Path(args.out).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
+    count = _speakers_check(args)
     if args.srt:
         cues = srt.read(Path(args.srt).expanduser())
         print(f"using {len(cues)} subtitles from {args.srt}, skipping transcription", file=sys.stderr)
     else:
         cues = _transcribe(src, args)
+    if count:
+        cues, _ = _label_speakers(src, cues, count)
     srt.write(out / f"{src.stem}.srt", cues)  # edit-render and notes read the subtitles from here
     backend = None if args.no_ai else _backend(args)
     print("looking for silences, fillers" + ("" if args.no_ai else " and AI suggestions") + "...", file=sys.stderr)
@@ -235,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--max-clips", type=int, default=10)
     r.add_argument("--title-language", default="繁體中文")
     r.add_argument("--language", help="spoken language code for Whisper, e.g. zh")
+    r.add_argument("--speakers", type=int, default=0, help="label who is speaking; give the number of people (2-8), 0 = off")
     r.add_argument("--whisper-model", default="small")
     r.add_argument("--device", choices=("cpu", "cuda"), default="cpu", help="Whisper device; cuda needs the gpu extra")
     r.add_argument("--font", default=DEFAULT_FONT)
@@ -250,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--no-ai", action="store_true", help="only silences and fillers, no model call")
     e.add_argument("--title-language", default="繁體中文", help="language of the AI cut reasons")
     e.add_argument("--language", help="spoken language code for Whisper, e.g. zh")
+    e.add_argument("--speakers", type=int, default=0, help="label who is speaking; give the number of people (2-8), 0 = off")
     e.add_argument("--whisper-model", default="small")
     e.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     e.add_argument("-v", "--verbose", action="store_true")

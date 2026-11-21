@@ -87,6 +87,16 @@ def check_whisper() -> list[dict]:
     return rows
 
 
+def check_speakers() -> dict:
+    from . import diarize
+    if not diarize.available():
+        return _row("speakers", "說話者辨識（選用）", "info", "尚未安裝",
+                    "用 start.bat／start.command 重新啟動會自動安裝，或執行 pip install -e \".[speakers]\"")
+    folder = diarize.model_dir()
+    have = all((folder / spec["name"]).is_file() for spec in (diarize.SEGMENTATION, diarize.EMBEDDING))
+    return _row("speakers", "說話者辨識（選用）", "ok", "已安裝，模型已下載" if have else "已安裝，第一次使用時會下載約 46 MB 的模型")
+
+
 def check_backends() -> dict:
     status = backend_status()
     ready = [b["name"] for b in status if b["ready"]]
@@ -128,7 +138,7 @@ def check_workdir(workdir: Path) -> dict:
 
 
 def run_checks(workdir: Path, *, ai: bool = False, backend: str = "claude") -> list[dict]:
-    rows = [check_python(), *check_ffmpeg(), *check_whisper(), check_backends(), check_workdir(workdir)]
+    rows = [check_python(), *check_ffmpeg(), *check_whisper(), check_speakers(), check_backends(), check_workdir(workdir)]
     if ai:
         rows.append(check_ai(backend))
     return rows
