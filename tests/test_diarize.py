@@ -63,13 +63,13 @@ def test_check_count_bounds():
 # ----------------------------------------------------------------- srt and names ---
 
 def test_srt_keeps_speaker_labels_and_can_leave_them_out(tmp_path):
-    c = [Cue(0, 2, "你好", "小明"), Cue(2, 4, "沒有標籤")]
+    c = [Cue(0, 2, "你好", "小明"), Cue(2, 4, "再說一句", "小明"), Cue(4, 6, "第三句", "小明"), Cue(6, 8, "沒有標籤")]
     srt.write(tmp_path / "a.srt", c)
     assert "【小明】你好" in (tmp_path / "a.srt").read_text(encoding="utf-8")
     assert srt.read(tmp_path / "a.srt") == c
     srt.write(tmp_path / "b.srt", c, labels=False)
     assert "【" not in (tmp_path / "b.srt").read_text(encoding="utf-8")
-    assert [x.speaker for x in srt.read(tmp_path / "b.srt")] == ["", ""]
+    assert [x.speaker for x in srt.read(tmp_path / "b.srt")] == ["", "", "", ""]
 
 
 def test_a_bracket_only_line_is_not_a_speaker():
@@ -249,3 +249,41 @@ def test_a_failing_voice_check_keeps_the_turn_labels(tmp_path, monkeypatch, caps
     monkeypatch.setattr(diarize, "_embedder", lambda: (_ for _ in ()).throw(RuntimeError("no model")))
     out = diarize.label_cues(tmp_path / "a.mp3", [Cue(0, 3, "你好")], 2)
     assert out[0].speaker == "講者1" and "voice check skipped" in capsys.readouterr().err
+
+
+# ------------------------------------------- tags in ordinary subtitles are text ---
+
+def test_bracket_tags_in_ordinary_subtitles_stay_text():
+    text = "1\n00:00:00,000 --> 00:00:02,000\n【本集重點】今天聊遊戲\n\n2\n00:00:02,000 --> 00:00:04,000\n【笑】哈哈\n\n3\n00:00:04,000 --> 00:00:06,000\n普通的一句\n\n4\n00:00:06,000 --> 00:00:08,000\n又一句\n"
+    cues = srt.parse(text)
+    assert [(c.speaker, c.text) for c in cues] == [("", "【本集重點】今天聊遊戲"), ("", "【笑】哈哈"), ("", "普通的一句"), ("", "又一句")]
+    assert cues[1].spoken == "【笑】哈哈"  # what a burned-in video or a prompt shows is the original text
+
+
+def test_a_labelled_file_keeps_its_labels_even_with_a_few_unlabelled_cues(tmp_path):
+    cues = [Cue(0, 1, "甲說", "講者1"), Cue(1, 2, "乙說", "講者2"), Cue(2, 3, "甲又說", "講者1"), Cue(3, 4, "沒有標籤")]
+    srt.write(tmp_path / "a.srt", cues)
+    assert srt.read(tmp_path / "a.srt") == cues
+
+
+def test_too_many_different_tags_are_not_speakers():
+    body = "\n\n".join(f"{i + 1}\n00:00:{i:02d},000 --> 00:00:{i:02d},500\n【標籤{i}】句子{i}" for i in range(15))
+    assert all(c.speaker == "" for c in srt.parse(body))
+    few = "\n\n".join(f"{i + 1}\n00:00:{i:02d},000 --> 00:00:{i:02d},500\n【講者{i % 3}】句子{i}" for i in range(15))
+    assert {c.speaker for c in srt.parse(few)} == {"講者0", "講者1", "講者2"}
+
+
+# ------------------------------------------ the original subtitles, not the edited ---
+
+def test_source_subtitles_skips_the_edited_episode(tmp_path):
+    assert srt.source_subtitles(tmp_path) is None
+    (tmp_path / "episode_edited.srt").write_text("x", encoding="utf-8")
+    assert srt.source_subtitles(tmp_path).name == "episode_edited.srt"  # nothing else to use
+    for stem in ("第五集", "podcast_01", "ep02"):
+        (tmp_path / f"{stem}.srt").write_text("x", encoding="utf-8")
+    assert sorted(p.name for p in tmp_path.glob("*.srt"))[0] in ("ep02.srt", "episode_edited.srt")  # names sort both ways
+    assert srt.source_subtitles(tmp_path).name == "ep02.srt"
+    (tmp_path / "ep02.srt").unlink()
+    assert srt.source_subtitles(tmp_path).name == "podcast_01.srt"
+    (tmp_path / "podcast_01.srt").unlink()
+    assert srt.source_subtitles(tmp_path).name == "第五集.srt"  # sorts after episode_edited, still chosen

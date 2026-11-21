@@ -387,3 +387,34 @@ def test_videos_are_a_separate_step_that_needs_a_finished_clips_run(server, tmp_
 
 def test_env_reports_whether_speaker_labels_are_installed(server):
     assert "speakers" in json.loads(call(server, "GET", "/api/env")[1])
+
+
+def _job_with_original_and_edited(server, tmp_path, stem):
+    from podclip import srt
+    folder = tmp_path / "job"
+    (folder / "out").mkdir(parents=True)
+    srt.write(folder / "out" / f"{stem}.srt", [srt.Cue(100, 110, "原始字幕夠長的一句", "講者1"), srt.Cue(110, 120, "另一人的一句話", "講者2")])
+    srt.write(folder / "out" / "episode_edited.srt", [srt.Cue(60, 70, "剪輯後字幕", "講者1")])
+    job = web.Job("plan", folder)
+    job.status = "done"
+    server.state.jobs[job.id] = job
+    return job, folder
+
+
+@pytest.mark.parametrize("stem", ["第五集", "podcast_01"])  # both sort after "episode_edited"
+def test_edited_subtitles_are_never_mistaken_for_the_original(server, tmp_path, stem, monkeypatch):
+    from podclip import voices
+    job, folder = _job_with_original_and_edited(server, tmp_path, stem)
+    speakers = web.read_speakers(job)
+    assert [s["label"] for s in speakers] == ["講者1", "講者2"] and speakers[0]["clips"][0]["start"] == 100.0
+    argv = web.build_argv("render", {"format": ".mp3"}, None, folder)
+    assert argv[argv.index("--srt") + 1].endswith(f"{stem}.srt")
+    (folder / "out" / "plan.json").write_text(json.dumps({"duration": 200.0, "cuts": [{"start": 105, "end": 108, "kind": "silence"}]}), encoding="utf-8")
+    assert web.read_plan(job)["cuts"][0]["text"] == "原始字幕夠長的一句"  # the excerpt comes from the original timeline
+    seen = {}
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"x")
+    job.source = audio
+    monkeypatch.setattr(voices, "remember", lambda a, cues, m, where=None: seen.update(first=cues[0].start) or {"小明": True})
+    web.rename_speakers(job, {"講者1": "小明"}, remember=True, voices_file=tmp_path / "v.json")
+    assert seen["first"] == 100.0  # the voice is learned from the original audio's times

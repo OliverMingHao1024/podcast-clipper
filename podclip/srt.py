@@ -23,6 +23,18 @@ class Cue:
         return f"{self.speaker}：{self.text}" if self.speaker else self.text
 
 
+EDITED_STEM = "episode_edited"  # what `edit-render` names its output; its subtitles use the edited timeline
+
+
+def source_subtitles(folder: Path) -> Path | None:
+    """The subtitles of the ORIGINAL audio in a run's output folder: the top-level .srt that is not the edited
+    episode's. Picking the first file by name is wrong when the audio's name sorts after "episode_edited"
+    (any Chinese file name does), because the edited file's times no longer match the original audio."""
+    found = sorted(Path(folder).glob("*.srt"))
+    originals = [p for p in found if not p.stem.startswith(EDITED_STEM)]
+    return (originals or found or [None])[0]
+
+
 def to_seconds(stamp: str) -> float:
     m = _TIME.fullmatch(stamp.strip())
     if not m:
@@ -39,7 +51,14 @@ def to_stamp(sec: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+LABELLED_SHARE, MAX_LABELS = 0.75, 12
+
+
 def parse(text: str) -> list[Cue]:
+    """Cues from SRT text. A leading 【name】 is a speaker label only when the file looks labelled: at least three
+    quarters of the cues carry one (the tool leaves only cues with no speech unlabelled) and there are at most 12
+    different names. Otherwise it is ordinary text, because subtitle files often open lines with tags such as
+    【笑】 or 【本集重點】, and those must not turn into speakers."""
     cues: list[Cue] = []
     for block in re.split(r"\r?\n\s*\r?\n", text.strip().lstrip("﻿")):
         lines = [ln for ln in block.splitlines() if ln.strip()]
@@ -53,11 +72,12 @@ def parse(text: str) -> list[Cue]:
             continue
         body = " ".join(ln.strip() for ln in lines[arrow + 1:]).strip()
         if body and end > start:
-            tag = _SPEAKER.match(body)
-            if tag and body[tag.end():].strip():
-                cues.append(Cue(start, end, body[tag.end():].strip(), tag[1].strip()))
-            else:
-                cues.append(Cue(start, end, body))
+            cues.append(Cue(start, end, body))
+    tagged = [(c, _SPEAKER.match(c.text)) for c in cues]
+    tagged = [(c, m) for c, m in tagged if m and c.text[m.end():].strip()]
+    if tagged and len(tagged) >= LABELLED_SHARE * len(cues) and len({m[1].strip() for _, m in tagged}) <= MAX_LABELS:
+        split = {id(c): (c.text[m.end():].strip(), m[1].strip()) for c, m in tagged}
+        cues = [Cue(c.start, c.end, *split[id(c)]) if id(c) in split else c for c in cues]
     cues.sort(key=lambda c: c.start)
     return cues
 

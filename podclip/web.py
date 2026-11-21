@@ -207,9 +207,10 @@ def build_argv(kind: str, o: dict, audio: Path | None, folder: Path) -> list[str
                 *(["--no-ai"] if o.get("no_ai") else [])]
     if kind == "render":
         ext = _choice(o, "format", OUT_EXT, ".mp3")
-        srts = sorted(out.glob("*.srt"))
+        from . import srt
+        original = srt.source_subtitles(out)
         return ["edit-render", str(out / "plan.json"), "--out", str(out / f"episode_edited{ext}"),
-                *(["--srt", str(srts[0])] if srts else []), *(["--no-loudnorm"] if o.get("no_loudnorm") else [])]
+                *(["--srt", str(original)] if original else []), *(["--no-loudnorm"] if o.get("no_loudnorm") else [])]
     if kind == "notes":
         subs = next((p for p in (out / "episode_edited.srt", *sorted(out.glob("*.srt"))) if p.is_file()), None)
         if subs is None:
@@ -325,8 +326,8 @@ def read_plan(job: Job) -> dict:
         data = json.loads((out / "plan.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise ApiError(400, "no readable plan yet") from error
-    srts = sorted(out.glob("*.srt"))
-    cues = srt.read(srts[0]) if srts else []
+    original = srt.source_subtitles(out)
+    cues = srt.read(original) if original else []
     cuts = [{"i": i, "start": c["start"], "end": c["end"], "kind": c["kind"], "reason": c.get("reason", ""),
              "apply": bool(c.get("apply", True)), "text": edit._excerpt(cues, c["start"], c["end"], 60)}
             for i, c in enumerate(data["cuts"])]
@@ -351,9 +352,9 @@ def _srt_files(job: Job) -> list[Path]:
 def read_speakers(job: Job) -> list[dict]:
     """Speakers found in the job's episode subtitles (empty when the run did not label them)."""
     from . import diarize, srt
-    top = sorted((job.folder / "out").glob("*.srt"))
+    original = srt.source_subtitles(job.folder / "out")
     try:
-        return diarize.summarize(srt.read(top[0])) if top else []
+        return diarize.summarize(srt.read(original)) if original else []
     except (OSError, ValueError):
         return []
 
@@ -367,12 +368,12 @@ def rename_speakers(job: Job, names: object, remember: bool = False, voices_file
     if not any(diarize.clean_name(v) for v in names.values()):
         raise ApiError(400, "type at least one usable name (1-20 characters, without 【 or 】)")
     remembered, note = {}, ""
-    top = sorted((job.folder / "out").glob("*.srt"))
+    original = srt.source_subtitles(job.folder / "out")
     if remember:  # a failure here must not lose the rename itself
         try:
-            if not top or job.source is None or not job.source.is_file():
+            if not original or job.source is None or not job.source.is_file():
                 raise RuntimeError("the original audio is no longer available")
-            remembered = voices.remember(job.source, srt.read(top[0]),
+            remembered = voices.remember(job.source, srt.read(original),
                                          {old: new for old, new in names.items() if diarize.clean_name(new)}, voices_file)
         except (RuntimeError, ValueError, OSError) as error:
             note = f"名字已改，但沒能記住聲音：{error}"
