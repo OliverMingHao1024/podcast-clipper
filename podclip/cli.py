@@ -282,6 +282,15 @@ def _voices(args: argparse.Namespace) -> int:
         text = Path(args.value).expanduser().read_text(encoding="utf-8")
         print(f"imported {voices.import_text(text)} people")
         return 0
+    if args.action == "add":
+        if not args.audio:
+            raise SystemExit("add needs --audio FILE, a recording of only that person")
+        try:
+            seconds = voices.add_from_audio(_supported_audio(args.audio), args.value)
+        except (ValueError, RuntimeError) as error:
+            raise SystemExit(str(error))
+        print(f"remembered {args.value} from {seconds} s of speech")
+        return 0
     # enroll: podclip voices enroll AUDIO --srt FILE --as 講者1=小明 ...
     if not args.srt or not args.alias:
         raise SystemExit("enroll needs --srt and at least one --as LABEL=NAME")
@@ -366,9 +375,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--workdir", default="podclip-work")
     c.add_argument("-v", "--verbose", action="store_true")
     k = sub.add_parser("voices", help="remembered voices: list, forget, export, import, or enroll from a labelled episode")
-    k.add_argument("action", choices=("list", "forget", "export", "import", "enroll"))
+    k.add_argument("action", choices=("list", "forget", "export", "import", "enroll", "add"))
     k.add_argument("value", nargs="?", default="", help="forget: the name; export/import: a file; enroll: the audio file")
     k.add_argument("--srt", help="enroll: the labelled subtitle file of that audio")
+    k.add_argument("--audio", help="add: a recording of only that person (about 20 s or more); value is the name")
     k.add_argument("--as", dest="alias", action="append", help="enroll: LABEL=NAME, e.g. 講者1=小明 (repeatable)")
     k.add_argument("-v", "--verbose", action="store_true")
     v = sub.add_parser("videos", help="make the waveform videos of an earlier `run` (after the speaker names are final)")

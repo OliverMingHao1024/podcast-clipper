@@ -95,6 +95,9 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
   <h2>已記住的聲音</h2>
   <p class="sub" style="margin-bottom:12px">下次辨識說話者時，聽起來像這些人的話會自動標上名字。存的是聲音特徵（無法還原成錄音），只放在這台電腦的 podclip-work/voices.json，不會上傳。聲音能認出一個人，匯出檔請只給自己保管，也只記住已同意的人。</p>
   <div id="voicerows"></div>
+  <div class="actions" style="margin-top:12px"><input type="text" id="voicenewname" maxlength="20" placeholder="新增一個人的名字" aria-label="要新增的人的名字">
+    <button class="ghost" id="voicenewbtn">選他單獨說話的錄音並新增</button><input type="file" id="voicenewfile" hidden accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.aac,.opus"></div>
+  <p class="sub">錄音請只有這個人在說話、約 20 秒以上（沒有別人插話或背景音樂）。太短或混到別人的聲音會被拒絕。</p>
   <div class="actions"><button class="ghost" id="voiceexport">匯出</button><button class="ghost" id="voiceimportbtn">匯入</button>
     <input type="file" id="voiceimport" hidden accept=".json,application/json"><span class="sub" id="voicemsg" aria-live="polite"></span></div>
 </section>
@@ -217,6 +220,7 @@ details{margin-top:var(--s3)}summary{cursor:pointer;color:var(--mute);font-size:
   <p class="label">說話者</p>
   <h2>誰是誰？填上名字</h2>
   <p class="sub" style="margin-bottom:12px">程式只能分出「不同的人」，不知道誰是誰，也可能分錯。對照每個人的幾句話，填上名字，會改寫字幕檔與之後輸出的文字稿；波形影片等你確定名字後再按「產生波形影片」才會做，名字才會燒進去。</p>
+  <audio id="spkaudio" preload="none" style="display:none"></audio>
   <div id="spkrows"></div>
   <label class="row"><input type="checkbox" id="remember" checked> 記住這些人的聲音，下次自動認出（只存在這台電腦；在上方「已記住的聲音」可刪除）</label>
   <div class="actions"><button id="spksave">套用名字</button><span class="sub" id="spkmsg" aria-live="polite"></span></div>
@@ -399,10 +403,19 @@ async function loadSpeakers(job) {
   if (!list.length) return;
   const box = $("#spkrows"); box.replaceChildren(); $("#spkmsg").textContent = "";
   list.forEach(s => {
-    const row = el("label", null, "row"), name = el("span", s.label + "（約 " + Math.max(1, Math.round(s.seconds / 60)) + " 分鐘）");
-    const inp = el("input"); inp.type = "text"; inp.maxLength = 20; inp.placeholder = "例如：小明"; inp.dataset.label = s.label; inp.setAttribute("aria-label", "把「" + s.label + "」改名為");
-    row.appendChild(name); row.appendChild(inp);
-    if (s.samples.length) row.appendChild(el("small", "例：" + s.samples.join(" ／ "), "sub"));
+    const auto = !/^講者\d+$/.test(s.label);
+    const row = el("div", null, "result"), name = el("div", s.label + "（約 " + Math.max(1, Math.round(s.seconds / 60)) + " 分鐘）" + (auto ? " ← 自動比對出來的，請聽一下確認" : ""));
+    const inp = el("input"); inp.type = "text"; inp.maxLength = 20; inp.placeholder = "這是誰？例如：小明"; inp.dataset.label = s.label; inp.setAttribute("aria-label", "把「" + s.label + "」改名為");
+    if (auto) inp.value = s.label;
+    const line = el("div", null, "listen");
+    (s.clips || []).forEach((c, i) => {
+      const b = el("button", "▶ 聽樣本 " + (i + 1) + "（" + clock(c.start) + "）", "ghost mini"); b.title = "播放原音檔 " + clock(c.start) + " 開始的一小段";
+      b.onclick = () => playSample(job, c); line.appendChild(b);
+    });
+    line.appendChild(inp);
+    row.appendChild(name); row.appendChild(line);
+    if (s.samples.length) row.appendChild(el("small", "字幕例：" + s.samples.join(" ／ "), "sub"));
+    if (!(s.clips || []).length) row.appendChild(el("small", "這個人沒有夠長、乾淨的連續發言可以試聽，請改看字幕例，或直接略過。", "sub"));
     box.appendChild(row);
   });
   $("#spksave").onclick = async () => {
@@ -453,6 +466,31 @@ async function loadPlan() {
   $("#silall").checked = quiet.every(c => c.apply);
   $("#silall").onchange = e => quiet.forEach(c => { c.apply = e.target.checked; });
 }
+
+let sampleTimer = null;
+function playSample(job, c) {
+  const aud = $("#spkaudio"); clearInterval(sampleTimer); aud.pause();
+  const src = "/source/" + job + "?t=" + encodeURIComponent(T);
+  if (!aud.src.endsWith(src)) aud.src = src;
+  const go = () => { aud.currentTime = c.start; aud.play().catch(e => { $("#spkmsg").textContent = "這個音檔格式瀏覽器無法播放：" + e.message; });
+    sampleTimer = setInterval(() => { if (aud.currentTime >= c.end || aud.ended) { clearInterval(sampleTimer); aud.pause(); } }, 60); };
+  if (aud.readyState >= 1) go(); else { aud.addEventListener("loadedmetadata", go, {once: true}); aud.load(); }
+}
+
+$("#voicenewbtn").onclick = () => {
+  if (!$("#voicenewname").value.trim()) { $("#voicemsg").textContent = "先填這個人的名字。"; return; }
+  $("#voicenewfile").click();
+};
+$("#voicenewfile").onchange = async () => {
+  const f = $("#voicenewfile").files[0]; if (!f) return; $("#voicenewfile").value = "";
+  const name = $("#voicenewname").value.trim(); $("#voicemsg").textContent = "分析聲音中，請稍候…"; $("#voicenewbtn").disabled = true;
+  try {
+    const r = await fetch("/api/voices/add?name=" + encodeURIComponent(name), {method: "PUT", headers: {"X-Token": T}, body: f});
+    const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || r.statusText);
+    $("#voicemsg").textContent = "已記住「" + name + "」（用了約 " + d.seconds + " 秒的說話）。"; $("#voicenewname").value = "";
+  } catch (e) { $("#voicemsg").textContent = "沒有新增：" + e.message; }
+  $("#voicenewbtn").disabled = false; loadVoices();
+};
 
 async function loadVoices() {
   const box = $("#voicerows"); box.replaceChildren();

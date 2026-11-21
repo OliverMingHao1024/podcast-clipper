@@ -39,6 +39,7 @@ from .web_page import PAGE
 
 MAX_UPLOAD = 4 * 1024 ** 3
 MAX_LOG_LINES = 2000
+MAX_VOICE_CLIP = 200 * 1024 ** 2
 _HEX = re.compile(r"[0-9a-f]{32}")
 WHISPER_MODELS = ("tiny", "base", "small", "medium")
 LANGUAGES = ("", "zh", "en", "ja", "ko")
@@ -521,6 +522,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"voices": voices_mod.people(st.workdir / "voices.json")})
         if method == "PUT" and parts == ["voices", "import"]:
             return self._voices_import()
+        if method == "PUT" and parts == ["voices", "add"]:
+            return self._voices_add((query.get("name") or [""])[0])
         if route == ("PUT", "subtitles"):
             return self._subtitles((query.get("for") or [""])[0])
         if route == ("PUT", "upload"):
@@ -604,6 +607,31 @@ class Handler(BaseHTTPRequestHandler):
                           use_ai=not o.get("no_ai"), stats_path=self.state.workdir / "speed.json",
                           speakers=bool(_speakers_arg(o)))
         return {"estimate": result, "duration": duration}
+
+    def _voices_add(self, name: str) -> None:
+        """Remember a person from an uploaded recording of only them (the file is deleted right after it is used)."""
+        self._body_read = True
+        length = int(self.headers.get("Content-Length") or 0)
+        if not 0 < length <= MAX_VOICE_CLIP:
+            self.close_connection = True
+            raise ApiError(413, "the recording is empty or too large (limit 200 MB)")
+        folder = Path(tempfile.mkdtemp(dir=self.state.workdir, prefix=".voice-"))
+        try:
+            target, remaining = folder / "clip.audio", length
+            with target.open("wb") as fh:
+                while remaining:
+                    chunk = self.rfile.read(min(1 << 20, remaining))
+                    if not chunk:
+                        raise ApiError(400, "upload interrupted")
+                    fh.write(chunk)
+                    remaining -= len(chunk)
+            try:
+                seconds = voices_mod.add_from_audio(target, name, self.state.workdir / "voices.json")
+            except (ValueError, RuntimeError) as error:
+                raise ApiError(400, str(error)) from error
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        self._json({"seconds": seconds, "voices": voices_mod.people(self.state.workdir / "voices.json")})
 
     def _voices_import(self) -> None:
         """Merge a voice file exported from this tool; only people with well-formed vectors are taken."""

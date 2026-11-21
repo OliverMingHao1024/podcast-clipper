@@ -160,6 +160,20 @@ def import_text(text: str, where: Path | None = None) -> int:
     return len(incoming["voices"])
 
 
+def add_from_audio(audio: Path, name: str, where: Path | None = None) -> int:
+    """Remember a person from a recording of only them. Returns the seconds of speech used; ValueError says what is wrong."""
+    clean = diarize.clean_name(name)
+    if not clean:
+        raise ValueError("type a name of 1-20 characters, without 【 or 】")
+    diarize.require()
+    try:
+        vec, seconds = diarize.voice_from_recording(diarize._samples(Path(audio)), diarize._embedder())
+    except RuntimeError as error:  # the file could not be decoded
+        raise ValueError(f"cannot read this audio: {error}") from error
+    enroll(clean, vec, where)
+    return round(seconds)
+
+
 def remember(audio: Path, cues: list, mapping: dict, where: Path | None = None) -> dict:
     """Remember the voices of speakers found in cues: mapping is {label in cues: name to store it under}.
     Returns {name: True when stored, False when that speaker has too little speech (about 18 s) to learn from}."""

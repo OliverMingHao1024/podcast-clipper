@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -250,6 +251,118 @@ def test_rename_can_remember_voices_and_a_failure_keeps_the_rename(tmp_path, mon
         job.source = None  # audio gone: same, the rename still happens
         status, body, _ = _call(srv, "POST", f"/api/speakers/{job.id}", {"names": {"阿華": "華華"}, "remember": True})
         assert status == 200 and "沒能記住" in json.loads(body)["note"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+# ---------------------------------------------------------- listening samples ---
+
+def _cues(*rows):
+    return [Cue(a, b, "第一句夠長的範例句子", who) for a, b, who in rows]
+
+
+def test_sample_clips_are_clean_runs_of_one_speaker():
+    cues = _cues((0, 2, "講者1"), (2.2, 5, "講者1"),            # run 0-5 s: one speaker, 5 s long
+                 (5, 6, "講者2"),                              # another speaker breaks the run
+                 (6, 8, "講者1"), (8.1, 9.5, "講者1"),          # 6-9.5 s: only 3.5 s
+                 (30, 36, "講者1"),                             # 6 s
+                 (40, 41, "講者1"), (45, 46, "")) # too short / unlabelled
+    clips = diarize.sample_clips(cues, "講者1")
+    assert clips == [{"start": 0.0, "end": 5.0}, {"start": 30.0, "end": 36.0}]
+    assert diarize.sample_clips(cues, "講者2") == []  # a 1 s run is too short even for the fallback
+
+
+def test_sample_clips_fall_back_to_shorter_runs_and_cut_long_ones():
+    short_only = _cues((0, 2.8, "講者1"), (10, 13, "講者1"))
+    assert [c["start"] for c in diarize.sample_clips(short_only, "講者1")] == [0.0, 10.0]
+    long_run = _cues((0, 4, "講者1"), (4.1, 8, "講者1"), (8.2, 20, "講者1"))
+    assert diarize.sample_clips(long_run, "講者1") == [{"start": 0.0, "end": 10.0}]  # one stretch, cut to 10 s
+
+
+def test_sample_clips_are_spread_over_the_episode():
+    cues = _cues(*[(i * 100, i * 100 + 6, "講者1") for i in range(9)])
+    starts = [c["start"] for c in diarize.sample_clips(cues, "講者1", count=3)]
+    assert starts == [0.0, 300.0, 600.0]
+
+
+def test_summary_carries_the_clips():
+    rows = diarize.summarize(_cues((0, 6, "講者1"), (6, 9, "講者2")))
+    assert rows[0]["clips"] == [{"start": 0.0, "end": 6.0}] and rows[1]["clips"] == [{"start": 6.0, "end": 9.0}]
+
+
+# ------------------------------------------------- a recording of one person ---
+
+def _recording(seconds, level):
+    return np.full(int(seconds * 16000), level, dtype=np.float32)
+
+
+def _two_voice_embed(a):
+    """+level audio is one voice and -level audio another; a mix of both in one chunk lands in between."""
+    pos = float((a > 0).mean())
+    v = np.array([pos, 1 - pos] + [0.0] * 30, dtype=np.float32)
+    return v / np.linalg.norm(v)
+
+
+def test_a_recording_of_one_person_is_accepted():
+    vec, seconds = diarize.voice_from_recording(_recording(40, 0.3), _two_voice_embed)
+    assert abs(float(np.linalg.norm(vec)) - 1.0) < 1e-5 and 39 <= seconds <= 40
+
+
+def test_a_recording_with_two_people_or_too_little_speech_is_refused():
+    mixed = np.concatenate([_recording(20, 0.3), _recording(20, -0.3)])
+    with pytest.raises(ValueError, match="one person"):
+        diarize.voice_from_recording(mixed, _two_voice_embed)
+    with pytest.raises(ValueError, match="not enough speech"):
+        diarize.voice_from_recording(_recording(10, 0.3), _two_voice_embed)
+    with pytest.raises(ValueError, match="not enough speech"):
+        diarize.voice_from_recording(np.zeros(60 * 16000, dtype=np.float32), _two_voice_embed)
+
+
+def test_pauses_do_not_count_as_speech():
+    loud, quiet = _recording(3, 0.3), np.zeros(2 * 16000, dtype=np.float32)
+    mostly_pauses = np.concatenate([loud, quiet] * 4)  # 12 s of speech in 20 s
+    with pytest.raises(ValueError, match="not enough speech"):
+        diarize.voice_from_recording(mostly_pauses, _two_voice_embed)
+    enough = np.concatenate([loud, quiet] * 8)  # 24 s of speech
+    assert diarize.voice_from_recording(enough, _two_voice_embed)[1] == pytest.approx(24, abs=1)
+
+
+def test_add_from_audio_stores_the_person(store, monkeypatch):
+    def embed32(a):
+        v = _two_voice_embed(a)
+        return v
+    monkeypatch.setattr(diarize, "require", lambda: None)
+    monkeypatch.setattr(diarize, "_samples", lambda _a: _recording(40, 0.3))
+    monkeypatch.setattr(diarize, "_embedder", lambda: embed32)
+    assert voices.add_from_audio("x.wav", " 新人 ", store) >= 39
+    assert voices.people(store) == [{"name": "新人", "samples": 1}]
+    with pytest.raises(ValueError, match="name"):
+        voices.add_from_audio("x.wav", "含【】", store)
+    monkeypatch.setattr(diarize, "_samples", lambda _a: (_ for _ in ()).throw(RuntimeError("ffmpeg could not decode")))
+    with pytest.raises(ValueError, match="cannot read this audio"):
+        voices.add_from_audio("x.wav", "乙", store)
+
+
+def test_web_add_person_validates_and_cleans_up(tmp_path, monkeypatch):
+    srv = _server(tmp_path)
+    try:
+        seen = {}
+
+        def fake(audio, name, where=None):
+            seen.update(name=name, size=Path(audio).stat().st_size, where=where)
+            return 33
+        monkeypatch.setattr(voices, "add_from_audio", fake)
+        status, body, _ = _call(srv, "PUT", "/api/voices/add?name=%E6%96%B0%E4%BA%BA", raw=b"RIFFxxxx")
+        assert status == 200 and json.loads(body)["seconds"] == 33
+        assert seen["name"] == "新人" and seen["size"] == 8 and seen["where"] == srv.state.workdir / "voices.json"
+        assert not [p for p in srv.state.workdir.iterdir() if p.name.startswith(".voice-")]  # the upload is deleted
+        monkeypatch.setattr(voices, "add_from_audio", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("not enough speech")))
+        status, body, _ = _call(srv, "PUT", "/api/voices/add?name=x", raw=b"abc")
+        assert status == 400 and "not enough speech" in json.loads(body)["error"]
+        assert not [p for p in srv.state.workdir.iterdir() if p.name.startswith(".voice-")]
+        assert _call(srv, "PUT", "/api/voices/add?name=x", raw=b"", token=True)[0] == 413
+        assert _call(srv, "PUT", "/api/voices/add?name=x", raw=b"abc", token=False)[0] == 403
     finally:
         srv.shutdown()
         srv.server_close()

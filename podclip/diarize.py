@@ -321,7 +321,68 @@ def summarize(cues: list[Cue], samples: int = 2) -> list[dict]:
         row["seconds"] += c.end - c.start
         if len(row["samples"]) < samples and len(c.text) >= 8:
             row["samples"].append(c.text[:40])
+    for row in info.values():
+        row["clips"] = sample_clips(cues, row["label"])
     return sorted(info.values(), key=lambda r: r["label"])
+
+
+CLIP_MIN, CLIP_FALLBACK_MIN, CLIP_MAX, CLIP_GAP = 4.0, 2.5, 10.0, 0.6
+
+
+def sample_clips(cues: list[Cue], who: str, count: int = 3) -> list[dict]:
+    """Up to `count` stretches {start, end} (seconds in the episode) to listen to when deciding who `who` is.
+
+    A stretch is a run of consecutive cues that all carry this speaker's label with nobody else in between, which
+    makes a wrong label unlikely; at least 4 s (2.5 s when the speaker has no longer run), cut to 10 s, spread
+    evenly over the episode so the user hears different parts rather than three neighbours."""
+    runs: list[list[float]] = []
+    current: list[float] | None = None
+    for c in cues:
+        if c.speaker != who:
+            current = None  # any other speaker, or an unlabelled cue, ends the run
+        elif current is not None and c.start - current[1] <= CLIP_GAP:
+            current[1] = c.end
+        else:
+            current = [c.start, c.end]
+            runs.append(current)
+    good = [r for r in runs if r[1] - r[0] >= CLIP_MIN] or [r for r in runs if r[1] - r[0] >= CLIP_FALLBACK_MIN]
+    if len(good) > count:
+        good = [good[int(i * len(good) / count)] for i in range(count)]
+    return [{"start": round(a, 1), "end": round(min(b, a + CLIP_MAX), 1)} for a, b in good]
+
+
+RECORDING_LOW_SIM, RECORDING_LOW_SHARE = 0.5, 0.15  # chunk pairs under this similarity count as 'two different voices'
+
+
+def speech_only(samples):
+    """Drop the quiet frames (0.1 s each) of a recording so pauses do not count as speech."""
+    import numpy as np
+    frame = 1600
+    count = len(samples) // frame
+    if count == 0:
+        return samples[:0]
+    frames = np.asarray(samples[:count * frame]).reshape(count, frame)
+    level = np.sqrt((frames ** 2).mean(axis=1))
+    return frames[level >= max(0.005, float(np.percentile(level, 90)) * 0.15)].reshape(-1)
+
+
+def voice_from_recording(samples, embed):
+    """(voice vector, seconds of speech) from a recording of ONE person. Raises ValueError with a readable reason when
+    there is too little speech or the pieces do not sound like one voice (a second person talking)."""
+    import numpy as np
+    speech = speech_only(samples)
+    size = int(CENTROID_CHUNK_SEC * 16000)
+    chunks = [speech[i:i + size] for i in range(0, len(speech) - size + 1, size)]
+    if len(chunks) < 3:
+        raise ValueError("not enough speech: about 18 seconds of one person talking are needed")
+    vectors = [embed(c) for c in chunks[::max(1, len(chunks) // MAX_CHUNKS)]]
+    mean = np.mean(vectors, axis=0)
+    mean = mean / np.linalg.norm(mean)
+    pairs = [float(a @ b) for i, a in enumerate(vectors) for b in vectors[i + 1:]]  # compared with each other, not with
+    apart = sum(1 for s in pairs if s < RECORDING_LOW_SIM) / len(pairs)  # the mean, which a mix of two people sits between
+    if apart > RECORDING_LOW_SHARE:
+        raise ValueError("this recording does not sound like one person; use a clip where only that person talks")
+    return mean, len(speech) / 16000
 
 
 def clean_name(name: object) -> str:
