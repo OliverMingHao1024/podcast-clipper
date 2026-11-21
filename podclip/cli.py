@@ -176,6 +176,7 @@ def _edit_render(args: argparse.Namespace) -> int:
     from . import edit
     src, duration, cuts = edit.read_plan(Path(args.plan))
     out = Path(args.out).expanduser().resolve()
+    cuts = edit.snap_cuts(src, cuts, duration)  # render and the subtitle remap must use the same, adjusted cuts
     result, new_len = edit.render(src, duration, cuts, out, loudnorm=not args.no_loudnorm)
     if args.srt:
         edited = edit.remap_cues(srt.read(Path(args.srt).expanduser()), cuts, duration)

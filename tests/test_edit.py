@@ -50,7 +50,7 @@ def test_parse_ai_cuts_validates():
 
 def test_remap_cues_shifts_and_drops():
     cues = cues_of("a", "b", "c", "d")          # 0-5, 5-10, 10-15, 15-20
-    out = remap_cues(cues, [Cut(5, 10, "x")], 20)
+    out = remap_cues(cues, [Cut(5, 10, "silence")], 20)
     assert [(c.text, c.start, c.end) for c in out] == [("a", 0, 5), ("c", 5, 10), ("d", 10, 15)]
 
 
@@ -126,3 +126,43 @@ def _srt(tmp_path):
     p = tmp_path / "x.srt"
     srt.write(p, cues_of("內容", "內容", "內容", step=8.0))
     return p
+
+
+def test_layout_crossfades_only_joins_that_removed_speech():
+    cuts = [Cut(10, 11, "silence"), Cut(30, 40, "retake")]
+    segs, joins = edit.layout(cuts, 100)
+    assert segs == [(0, 10), (11, 30), (40, 100)]
+    assert joins == [(11, False), (40, True)]
+
+
+def test_layout_skips_crossfade_next_to_a_tiny_piece():
+    segs, joins = edit.layout([Cut(10, 20, "retake"), Cut(20.1, 30, "incident")], 100)
+    assert segs == [(0, 10), (20, 20.1), (30, 100)]
+    assert [xf for _, xf in joins] == [False, False]
+
+
+def test_remap_accounts_for_the_crossfade_overlap():
+    cues = [srt.Cue(50, 52, "after")]
+    plain = remap_cues(cues, [Cut(10, 30, "silence")], 100)[0].start
+    faded = remap_cues(cues, [Cut(10, 30, "retake")], 100)[0].start
+    assert plain == 30 and abs(faded - (30 - edit.XFADE)) < 1e-9
+
+
+@needs_ffmpeg
+def test_snap_moves_a_cut_edge_into_the_pause(tmp_path):
+    audio = tmp_path / "ep.wav"
+    _tone_silence_tone(audio)  # tone to 10 s, silence 10-14 s, tone after
+    moved = edit.snap_cuts(audio, [Cut(9.9, 20, "retake")], 24)[0]
+    assert 10.0 <= moved.start <= 10.3
+    kept = edit.snap_cuts(audio, [Cut(9.9, 20, "silence")], 24)[0]
+    assert kept.start == 9.9  # cuts inside pauses are left alone
+
+
+@needs_ffmpeg
+def test_content_cut_is_crossfaded_and_length_matches(tmp_path):
+    audio = tmp_path / "ep.wav"
+    _tone_silence_tone(audio)
+    cuts = [Cut(5, 8, "retake")]
+    out, new_len = edit.render(audio, 24, cuts, tmp_path / "o.wav", loudnorm=False)
+    assert abs(edit.probe_duration(out) - new_len) < 0.05
+    assert abs(new_len - (24 - 3 - edit.XFADE)) < 1e-6

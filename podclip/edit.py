@@ -5,8 +5,10 @@ Two steps so a human stays in control:
 1. ``build_plan`` finds cuts and writes an editable plan (``plan.json`` + readable ``plan.md``).
    Cuts come from three places: long silences (ffmpeg silencedetect), cues that are only a filler
    ("嗯", "呃"), and stretches the model flags as retakes / recording incidents / tangents.
-2. ``render`` applies the cuts whose ``apply`` is still true: one ffmpeg pass, short fades at every
-   join, optional loudness normalisation, plus a subtitle file remapped to the new timeline.
+2. ``render`` applies the cuts whose ``apply`` is still true: one ffmpeg pass, optional loudness
+   normalisation, plus a subtitle file remapped to the new timeline. Cuts that remove speech are first
+   moved to the nearest pause (``snap_cuts``) and joined with a short crossfade so the background noise
+   does not drop out; cuts inside pauses keep a very short fade.
 
 The model's answer is untrusted: rows must be ints in range, kinds are whitelisted, and one AI cut
 may not exceed MAX_AI_CUT_SEC. Anything else is dropped before it reaches the plan.
@@ -36,6 +38,8 @@ AI_TRIM = 0.1
 MIN_PIECE = 0.05
 log = logging.getLogger(__name__)
 FADE = 0.02
+XFADE = 0.1       # overlap at a join where speech was removed, so the room tone never drops out
+SNAP_SEC = 0.3    # how far a content cut may move to reach a pause
 MAX_AI_CUT_SEC = 300
 AI_KINDS = ("retake", "incident", "tangent", "intro", "other")
 FILLERS = {"嗯", "呃", "額", "欸", "唔", "嗯嗯", "呃呃", "嗯哼"}
@@ -161,18 +165,92 @@ def ai_cuts(cues: list[srt.Cue], backend: LLMBackend, language: str = "繁體中
 
 # ----------------------------------------------------------------- plan files ---
 
-def merge(cuts: list[Cut], duration: float) -> list[tuple[float, float]]:
-    """Union of the cuts that are switched on, clamped to the file."""
-    spans = sorted((max(c.start, 0.0), min(c.end, duration)) for c in cuts if c.apply and c.end > c.start)
-    merged: list[list[float]] = []
-    for s, e in spans:
+def is_content(cut: Cut) -> bool:
+    """Silence and filler cuts happen inside pauses; everything else removes speech and needs a softer join."""
+    return cut.kind not in ("silence", "filler")
+
+
+def _spans(cuts: list[Cut], duration: float) -> list[tuple[float, float, bool]]:
+    """Union of the cuts that are switched on, clamped to the file; the flag says a content cut is inside."""
+    raw = sorted((max(c.start, 0.0), min(c.end, duration), is_content(c)) for c in cuts if c.apply and c.end > c.start)
+    merged: list[list] = []
+    for s, e, content in raw:
         if e - s < MIN_PIECE:
             continue
         if merged and s <= merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], e)
+            merged[-1][2] = merged[-1][2] or content
         else:
-            merged.append([s, e])
-    return [(s, e) for s, e in merged]
+            merged.append([s, e, content])
+    return [(s, e, c) for s, e, c in merged]
+
+
+def merge(cuts: list[Cut], duration: float) -> list[tuple[float, float]]:
+    """Union of the cuts that are switched on, clamped to the file."""
+    return [(s, e) for s, e, _ in _spans(cuts, duration)]
+
+
+def layout(cuts: list[Cut], duration: float) -> tuple[list[tuple[float, float]], list[tuple[float, bool]]]:
+    """Kept segments plus, for each join between two of them, (end of the removed part, crossfaded?).
+
+    A join is crossfaded when speech was removed and both neighbours are long enough to overlap.
+    """
+    segs: list[tuple[float, float]] = []
+    joins: list[tuple[float, bool]] = []
+    pos, acc = 0.0, None  # acc = (end, content) of the removal since the last kept segment
+    for s, e, content in [*_spans(cuts, duration), (duration, duration, False)]:
+        if s - pos >= MIN_PIECE:
+            if acc is not None and segs:
+                joins.append(acc)
+            acc = None
+            segs.append((pos, s))
+        acc = (e, (acc[1] if acc else False) or content)
+        pos = e
+    out = []
+    for i, (end, content) in enumerate(joins):
+        long_enough = segs[i][1] - segs[i][0] >= 2.5 * XFADE and segs[i + 1][1] - segs[i + 1][0] >= 2.5 * XFADE
+        out.append((end, content and long_enough))
+    return segs, out
+
+
+def _frame_levels(src: Path, start: float, length: float) -> list[float]:
+    """Loudness (RMS) of consecutive 10 ms frames from start; empty when the audio cannot be read."""
+    import array
+    proc = subprocess.run([ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-ss", f"{max(start, 0):.3f}",
+                           "-t", f"{length:.3f}", "-i", str(src), "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+                          capture_output=True)
+    if proc.returncode != 0:
+        return []
+    samples = array.array("h")
+    samples.frombytes(proc.stdout[: len(proc.stdout) // 2 * 2])
+    n = 80
+    return [(sum(x * x for x in samples[i:i + n]) / n) ** 0.5 for i in range(0, len(samples) - n + 1, n)]
+
+
+def _quietest(src: Path, t: float, duration: float) -> float:
+    """The quietest moment within SNAP_SEC of t (nearest one when several are equally quiet)."""
+    lo = max(t - SNAP_SEC, 0.0)
+    levels = _frame_levels(src, lo, min(t + SNAP_SEC, duration) - lo)
+    if not levels:
+        return t
+    floor = min(levels) * 1.25 + 1.0
+    best = min((i for i, v in enumerate(levels) if v <= floor), key=lambda i: abs(lo + i * 0.01 + 0.005 - t))
+    return lo + best * 0.01 + 0.005
+
+
+def snap_cuts(src: Path, cuts: list[Cut], duration: float) -> list[Cut]:
+    """Move the edges of content cuts to the nearest pause so a join does not land inside a word."""
+    out = []
+    for c in cuts:
+        if c.apply and is_content(c):
+            try:
+                s, e = _quietest(src, c.start, duration), _quietest(src, c.end, duration)
+            except (OSError, ValueError):
+                s, e = c.start, c.end
+            if e - s >= 0.5:  # never let snapping swallow the cut
+                c = Cut(s, e, c.kind, c.reason, c.apply)
+        out.append(c)
+    return out
 
 
 def kept_segments(cuts: list[Cut], duration: float) -> list[tuple[float, float]]:
@@ -255,9 +333,10 @@ def read_plan(path: Path) -> tuple[Path, float, list[Cut]]:
 
 def remap_cues(cues: list[srt.Cue], cuts: list[Cut], duration: float) -> list[srt.Cue]:
     removed = merge(cuts, duration)
+    overlaps = [end for end, crossfaded in layout(cuts, duration)[1] if crossfaded]  # each overlap shortens the audio
 
     def new_time(t: float) -> float:
-        return t - sum(min(max(t - s, 0.0), e - s) for s, e in removed)
+        return t - sum(min(max(t - s, 0.0), e - s) for s, e in removed) - XFADE * sum(1 for end in overlaps if end <= t)
 
     out = []
     for c in cues:
@@ -269,17 +348,34 @@ def remap_cues(cues: list[srt.Cue], cuts: list[Cut], duration: float) -> list[sr
 
 def render(src: Path, duration: float, cuts: list[Cut], out: Path, *, loudnorm: bool = True) -> tuple[Path, float]:
     """Returns (output path, new duration)."""
-    segments = kept_segments(cuts, duration)
+    segments, joins = layout(cuts, duration)
     if not segments:
         raise RenderError("every part of the episode is cut")
-    parts, labels = [], []
+    crossfaded = [xf for _, xf in joins]
+    parts = []
     for i, (a, b) in enumerate(segments):
         fade = min(FADE, (b - a) / 3)
-        parts.append(f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS,"
-                     f"afade=t=in:d={fade:.3f},afade=t=out:st={b - a - fade:.3f}:d={fade:.3f}[s{i}]")
-        labels.append(f"[s{i}]")
+        fades = []  # an edge that is crossfaded with its neighbour must not also dip to silence
+        if i == 0 or not crossfaded[i - 1]:
+            fades.append(f"afade=t=in:d={fade:.3f}")
+        if i == len(segments) - 1 or not crossfaded[i]:
+            fades.append(f"afade=t=out:st={b - a - fade:.3f}:d={fade:.3f}")
+        parts.append(f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS" + "".join("," + f for f in fades) + f"[s{i}]")
+    chunks: list[list[int]] = [[0]]  # runs of segments joined with plain fades; chunks meet through crossfades
+    for i in range(1, len(segments)):
+        if crossfaded[i - 1]:
+            chunks.append([i])
+        else:
+            chunks[-1].append(i)
+    for j, members in enumerate(chunks):
+        parts.append("".join(f"[s{i}]" for i in members) + (f"concat=n={len(members)}:v=0:a=1[c{j}]" if len(members) > 1
+                                                          else f"anull[c{j}]"))
+    current = "c0"
+    for j in range(1, len(chunks)):
+        parts.append(f"[{current}][c{j}]acrossfade=d={XFADE}:c1=qsin:c2=qsin[x{j}]")
+        current = f"x{j}"
     tail = ",loudnorm=I=-16:TP=-1.5:LRA=11" if loudnorm else ""
-    graph = ";".join(parts) + f";{''.join(labels)}concat=n={len(segments)}:v=0:a=1{tail}[a]"
+    graph = ";".join(parts) + f";[{current}]anull{tail}[a]"
     codec = {".mp3": ["-c:a", "libmp3lame", "-q:a", "2"], ".m4a": ["-c:a", "aac", "-b:a", "128k"],
              ".wav": ["-c:a", "pcm_s16le"]}.get(out.suffix.lower())
     if codec is None:
@@ -295,4 +391,4 @@ def render(src: Path, duration: float, cuts: list[Cut], out: Path, *, loudnorm: 
         script.unlink(missing_ok=True)
     if proc.returncode != 0:
         raise RenderError(f"ffmpeg failed: {proc.stderr.strip()[-400:]}")
-    return out, sum(b - a for a, b in segments)
+    return out, sum(b - a for a, b in segments) - XFADE * sum(crossfaded)
