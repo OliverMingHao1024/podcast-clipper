@@ -135,7 +135,8 @@ def _render_clip(n: int, clip: Clip, src: Path, cues: list[srt.Cue], out: Path, 
     if not dry_run:
         formats = options["formats"]
         base = folder / "clip"
-        audio = cut_audio(src, clip, base, options["audio_ext"]) if ("audio" in formats or "video" in formats) else None
+        if "audio" in formats or "video" in formats:  # the video, made later, plays this file
+            cut_audio(src, clip, base, options["audio_ext"])
         if "srt" in formats:
             write_srt(cues, clip, base)  # the video is made later by `podclip videos`, once the speaker names are final
         (folder / "post.txt").write_text(_post_text(clip), encoding="utf-8")

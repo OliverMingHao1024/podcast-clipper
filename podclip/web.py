@@ -359,7 +359,8 @@ def read_speakers(job: Job) -> list[dict]:
         return []
 
 
-def rename_speakers(job: Job, names: object, remember: bool = False, voices_file: Path | None = None) -> dict:
+def rename_speakers(job: Job, names: object, remember: bool = False, voices_file: Path | None = None,
+                    busy: bool = False) -> dict:
     """Apply {old label: new name} to every subtitle file of the job. With remember, also store each named speaker's
     voice (from this job's audio) so the next episode can recognise them. Returns {changed, remembered, note}."""
     from . import diarize, srt, voices
@@ -369,6 +370,8 @@ def rename_speakers(job: Job, names: object, remember: bool = False, voices_file
         raise ApiError(400, "type at least one usable name (1-20 characters, without 【 or 】)")
     remembered, note = {}, ""
     original = srt.source_subtitles(job.folder / "out")
+    if remember and busy:  # learning voices is heavy; do not compete with a running job, the rename itself still happens
+        remember, note = False, "名字已改，但有工作正在進行，這次沒有記住聲音；等它完成後再按一次「套用名字」。"
     if remember:  # a failure here must not lose the rename itself
         try:
             if not original or job.source is None or not job.source.is_file():
@@ -560,7 +563,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"speakers": read_speakers(job)})
             if route == ("POST", "speakers"):
                 body = self._body()
-                result = rename_speakers(job, body.get("names"), bool(body.get("remember")), st.workdir / "voices.json")
+                result = rename_speakers(job, body.get("names"), bool(body.get("remember")), st.workdir / "voices.json", st.busy())
                 return self._json({**result, "speakers": read_speakers(job)})
         raise ApiError(404, "not found")
 
@@ -616,6 +619,9 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 < length <= MAX_VOICE_CLIP:
             self.close_connection = True
             raise ApiError(413, "the recording is empty or too large (limit 200 MB)")
+        if self.state.busy():  # analysing a voice is heavy; wait for the running job instead of competing with it
+            self.close_connection = True  # the body is left unread
+            raise ApiError(409, "another job is still running; try again when it has finished")
         folder = Path(tempfile.mkdtemp(dir=self.state.workdir, prefix=".voice-"))
         try:
             target, remaining = folder / "clip.audio", length

@@ -287,3 +287,26 @@ def test_source_subtitles_skips_the_edited_episode(tmp_path):
     assert srt.source_subtitles(tmp_path).name == "podcast_01.srt"
     (tmp_path / "podcast_01.srt").unlink()
     assert srt.source_subtitles(tmp_path).name == "第五集.srt"  # sorts after episode_edited, still chosen
+
+
+# ----------------------------------------------------------- decoding the audio ---
+
+@needs_ffmpeg
+def test_samples_decodes_to_float32_of_the_right_length(tmp_path):
+    np = pytest.importorskip("numpy")
+    audio = tmp_path / "tone.mp3"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=5", str(audio)],
+                   check=True)
+    x = diarize._samples(audio)
+    assert x.dtype == np.float32 and abs(len(x) / 16000 - 5.0) < 0.2
+    assert 0.05 < float(np.abs(x).max()) <= 1.0  # a real signal in -1..1 (ffmpeg's test sine peaks near 0.12)
+
+
+@needs_ffmpeg
+def test_samples_reports_a_file_it_cannot_decode(tmp_path):
+    bad = tmp_path / "broken.mp3"
+    bad.write_bytes(b"this is not audio" * 100)
+    with pytest.raises(RuntimeError):
+        diarize._samples(bad)
+    with pytest.raises(RuntimeError):
+        diarize._samples(tmp_path / "missing.mp3")

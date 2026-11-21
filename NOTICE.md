@@ -7,5 +7,7 @@ Copyright (c) AutoClip authors, MIT License. Code here is a rewrite; no AutoClip
 verbatim. Keep this notice if you redistribute.
 
 Optional speaker labels download two models on first use (not bundled in this repository):
-the pyannote segmentation 3.0 model (MIT) and the 3D-Speaker ERes2Net model (Apache-2.0), both as
+the pyannote segmentation 3.0 model (MIT, license file shipped with the model) and the 3D-Speaker ERes2Net
+model (the 3D-Speaker project is Apache-2.0; the terms of the pretrained weights are on their ModelScope page
+and have not been verified here), both as
 published in the sherpa-onnx release assets, and run them with sherpa-onnx (Apache-2.0).

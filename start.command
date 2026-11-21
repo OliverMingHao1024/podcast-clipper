@@ -30,10 +30,14 @@ if [ ! -x ".venv/bin/python" ]; then
   }
 fi
 
-# Optional speaker labels: older private environments get the extra component once; a failure only disables that feature.
-if ! .venv/bin/python -c "import sherpa_onnx" >/dev/null 2>&1; then
+# Optional speaker labels: older private environments get the extra component once. A failed install only turns that
+# feature off and leaves a marker so it is not retried on every start; delete .venv/.no-speakers to try again.
+if [ ! -f .venv/.no-speakers ] && ! .venv/bin/python -c "import sherpa_onnx, numpy" >/dev/null 2>&1; then
   echo "Installing the optional speaker-labelling component, one time..."
-  .venv/bin/python -m pip install -q -e ".[speakers]" || echo "Speaker labels will be unavailable, install failed."
+  if ! .venv/bin/python -m pip install -q -e ".[speakers]"; then
+    echo "Speaker labels will be unavailable because the install failed. Delete .venv/.no-speakers to try again."
+    : > .venv/.no-speakers
+  fi
 fi
 
 if ! command -v ffmpeg >/dev/null 2>&1; then

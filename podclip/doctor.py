@@ -37,7 +37,7 @@ def _install_hint(tool: str) -> str:
     if sys.platform == "darwin":
         return f"macOS：在終端機執行 brew install {tool}"
     if sys.platform == "win32":
-        return f"Windows：在命令提示字元執行 winget install ffmpeg，裝完重新開啟啟動檔"
+        return "Windows：在命令提示字元執行 winget install ffmpeg，裝完重新開啟啟動檔"
     return f"請用系統的套件管理員安裝 {tool}"
 
 
@@ -87,12 +87,14 @@ def check_whisper() -> list[dict]:
     return rows
 
 
-def check_speakers() -> dict:
+def check_speakers(workdir: Path | None = None) -> dict:
     from . import diarize
     if not diarize.available():
         return _row("speakers", "說話者辨識（選用）", "info", "尚未安裝",
-                    "用 start.bat／start.command 重新啟動會自動安裝，或執行 pip install -e \".[speakers]\"")
-    folder = diarize.model_dir()
+                    "用 start.bat／start.command 重新啟動會自動安裝（先前安裝失敗過的話，先刪除 .venv 裡的 .no-speakers 檔），"
+                    "或執行 pip install -e \".[speakers]\"")
+    # the web page keeps the models in <workdir>/models; a terminal run uses PODCLIP_MODELS or podclip-work/models
+    folder = Path(os.environ["PODCLIP_MODELS"]) if os.environ.get("PODCLIP_MODELS") else (workdir or Path("podclip-work")) / "models"
     have = all((folder / spec["name"]).is_file() for spec in (diarize.SEGMENTATION, diarize.EMBEDDING))
     return _row("speakers", "說話者辨識（選用）", "ok", "已安裝，模型已下載" if have else "已安裝，第一次使用時會下載約 46 MB 的模型")
 
@@ -138,7 +140,7 @@ def check_workdir(workdir: Path) -> dict:
 
 
 def run_checks(workdir: Path, *, ai: bool = False, backend: str = "claude") -> list[dict]:
-    rows = [check_python(), *check_ffmpeg(), *check_whisper(), check_speakers(), check_backends(), check_workdir(workdir)]
+    rows = [check_python(), *check_ffmpeg(), *check_whisper(), check_speakers(workdir), check_backends(), check_workdir(workdir)]
     if ai:
         rows.append(check_ai(backend))
     return rows

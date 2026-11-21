@@ -159,7 +159,7 @@ macOS 尚未在實機測試（特別是波形影片字幕的字型，以及說�
 
 ## 致謝
 
-選段的核心概念與提示詞寫法改編自開源專案 [AutoClip](https://github.com/zhouxiaoka/autoclip)（MIT 授權）；本專案為重新實作，授權聲明見 [NOTICE.md](NOTICE.md)。語音辨識使用 [faster-whisper](https://github.com/SYSTRAN/faster-whisper)，說話者辨識使用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0）搭配 pyannote 分段模型（MIT）與 3D-Speaker 聲紋模型（Apache-2.0），影音處理使用 [FFmpeg](https://ffmpeg.org/)。
+選段的核心概念與提示詞寫法改編自開源專案 [AutoClip](https://github.com/zhouxiaoka/autoclip)（MIT 授權）；本專案為重新實作，授權聲明見 [NOTICE.md](NOTICE.md)。語音辨識使用 [faster-whisper](https://github.com/SYSTRAN/faster-whisper)，說話者辨識使用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0）搭配 pyannote 分段模型（MIT）與 [3D-Speaker](https://github.com/modelscope/3D-Speaker) 聲紋模型（專案為 Apache-2.0；模型權重的條款請見其 ModelScope 頁面，我們沒有逐一查證），影音處理使用 [FFmpeg](https://ffmpeg.org/)。
 
 ## 授權
 

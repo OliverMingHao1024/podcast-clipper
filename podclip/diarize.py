@@ -109,13 +109,38 @@ def ensure_models(folder: Path | None = None) -> tuple[Path, Path]:
 
 
 def _samples(audio: Path):
+    """The whole audio as 16 kHz mono float32 (about 230 MB per hour). ffmpeg writes straight into one array sized
+    from the file's length; collecting its output as bytes and converting afterwards used about 2.5 times as much."""
     import numpy as np
-    proc = subprocess.run(["ffmpeg", "-v", "error", "-i", str(audio), "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
-                          capture_output=True)
-    if proc.returncode != 0 or not proc.stdout:
-        reason = proc.stderr.decode("utf-8", errors="replace").strip()[-200:]
+
+    from .edit import probe_duration
+    from .render import RenderError
+    try:
+        room = int(probe_duration(Path(audio)) * 1.01 * 16000) + 16 * 16000  # a little more than the reported length
+    except (RenderError, OSError) as error:
+        raise RuntimeError(f"cannot read the length of the audio for speaker labelling: {error}") from error
+    out = np.empty(room, dtype=np.float32)
+    view, filled = memoryview(out).cast("B"), 0
+    with tempfile.TemporaryFile() as log:  # a file, not a pipe: a noisy broken file could fill a pipe and stall ffmpeg
+        proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(audio), "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                                stdout=subprocess.PIPE, stderr=log)
+        try:
+            while filled < len(view):
+                got = proc.stdout.readinto(view[filled:filled + (4 << 20)])
+                if not got:
+                    break
+                filled += got
+            overflow = filled == len(view) and bool(proc.stdout.read(1))
+        finally:
+            proc.stdout.close()
+            code = proc.wait()
+        log.seek(0)
+        reason = log.read().decode("utf-8", errors="replace").strip()[-200:]
+    if overflow:
+        raise RuntimeError("the audio is longer than its header says; cannot label speakers")
+    if code != 0 or filled < 4:
         raise RuntimeError(f"ffmpeg could not decode the audio for speaker labelling: {reason}")
-    return np.frombuffer(proc.stdout, dtype="<i2").astype(np.float32) / 32768.0
+    return out[:filled // 4]
 
 
 def turns_for(audio: Path, speakers: int, samples=None) -> list[tuple[float, float, int]]:

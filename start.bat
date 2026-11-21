@@ -18,12 +18,18 @@ if not exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -m pip install -q -e ".[asr]" || goto :fail
 )
 
-rem Optional speaker labels: older private environments get the extra component once; a failure only disables that feature.
-".venv\Scripts\python.exe" -c "import sherpa_onnx" >nul 2>nul
+rem Optional speaker labels: older private environments get the extra component once. A failed install only turns
+rem that feature off and leaves a marker so it is not retried on every start; delete .venv\.no-speakers to try again.
+if exist ".venv\.no-speakers" goto :speakers_done
+".venv\Scripts\python.exe" -c "import sherpa_onnx, numpy" >nul 2>nul
+if not errorlevel 1 goto :speakers_done
+echo Installing the optional speaker-labelling component, one time...
+".venv\Scripts\python.exe" -m pip install -q -e ".[speakers]"
 if errorlevel 1 (
-  echo Installing the optional speaker-labelling component, one time...
-  ".venv\Scripts\python.exe" -m pip install -q -e ".[speakers]" || echo Speaker labels will be unavailable, install failed.
+  echo Speaker labels will be unavailable because the install failed. Delete .venv\.no-speakers to try again.
+  type nul > ".venv\.no-speakers"
 )
+:speakers_done
 
 where ffmpeg >nul 2>nul
 if errorlevel 1 echo WARNING: ffmpeg was not found on PATH. Install it first ^(see README^), otherwise cutting will fail.

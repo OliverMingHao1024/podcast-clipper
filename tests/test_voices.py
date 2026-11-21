@@ -366,3 +366,34 @@ def test_web_add_person_validates_and_cleans_up(tmp_path, monkeypatch):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# ------------------------------------------------- heavy actions wait for a job ---
+
+def test_voice_actions_do_not_compete_with_a_running_job(tmp_path, monkeypatch):
+    from podclip import srt, web
+    srv = _server(tmp_path)
+    try:
+        folder = tmp_path / "job"
+        (folder / "out").mkdir(parents=True)
+        srt.write(folder / "out" / "ep.srt", [Cue(0, 30, "甲說很久的話", "講者1")])
+        done = web.Job("clips", folder)
+        done.status = "done"
+        done.source = tmp_path / "a.mp3"
+        (tmp_path / "a.mp3").write_bytes(b"x")
+        srv.state.jobs[done.id] = done
+        busy = web.Job("render", folder)  # status defaults to "running"
+        srv.state.jobs[busy.id] = busy
+        called = []
+        monkeypatch.setattr(voices, "remember", lambda *a, **k: called.append(1) or {"小明": True})
+        monkeypatch.setattr(voices, "add_from_audio", lambda *a, **k: called.append(2) or 5)
+        status, body, _ = _call(srv, "POST", f"/api/speakers/{done.id}", {"names": {"講者1": "小明"}, "remember": True})
+        data = json.loads(body)
+        assert status == 200 and data["remembered"] == [] and "沒有記住聲音" in data["note"] and called == []
+        assert [c.speaker for c in srt.read(folder / "out" / "ep.srt")] == ["小明"]  # the rename itself still happened
+        assert _call(srv, "PUT", "/api/voices/add?name=x", raw=b"abc")[0] == 409 and called == []
+        busy.status = "done"  # once the job has finished both work again
+        assert _call(srv, "PUT", "/api/voices/add?name=x", raw=b"abc")[0] == 200 and called == [2]
+    finally:
+        srv.shutdown()
+        srv.server_close()
